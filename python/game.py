@@ -1301,7 +1301,26 @@ def run() -> int:
 
 
 def selftest() -> int:
-    """Headless end-to-end check: world gen, movement, combat, quests, save/load."""
+    """Headless end-to-end check; also writes a report file so a windowed .exe
+    build (no console) can be verified."""
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        code = _selftest_body()
+    text = buf.getvalue()
+    print(text, end="")
+    report = Path(os.environ.get("TEMP", ".")) / "pixelrpg_selftest.txt"
+    try:
+        report.write_text(text, encoding="utf-8")
+        print(f"report written to {report}")
+    except OSError:
+        pass
+    return code
+
+
+def _selftest_body() -> int:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
     pygame.display.set_mode((64, 64))
