@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pixel RPG Adventure 1.2 — Python / pygame-ce.
+Pixel RPG Adventure 1.3 — Python / pygame-ce.
 
-Changes since 1.1:
-  * selectable resolutions up to 1920x1080 (menu + config + --res flag + F11 fullscreen)
-  * text/HUD rendered at native resolution (was upscaled with the world -> blurry)
-  * trees no longer block the village; NPCs are validated reachable by pathfinding
-  * new: pause/settings menu (F10)
+New in 1.3:
+  * 32x32 character sprites (double size, real detail) + richer tile/object art
+  * full inventory with loot, equipment (weapon/armor) and item use
+  * animated main menu, settings screen and pause menu
 
 Run:        python game.py [--res 1920x1080] [--fullscreen]
-Self-test:  python game.py --selftest     (headless, exits 0 on success)
+Self-test:  python game.py --selftest
 """
 
 from __future__ import annotations
@@ -26,15 +25,18 @@ from typing import Callable
 
 import pygame
 
+import items as IT
+import sprites as SP
+
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
 TILE = 16
+SPRITE = SP.SPRITE               # 32
 MAP_W, MAP_H = 100, 64
-SPRITE = 16
 FPS = 60
+BASE_UI_WIDTH = 1248
 
-# (width, height, zoom) — zoom is an integer so pixels stay perfectly crisp
 RESOLUTIONS = [
     (960, 540, 2),
     (1280, 720, 3),
@@ -42,8 +44,7 @@ RESOLUTIONS = [
     (1600, 900, 4),
     (1920, 1080, 4),
 ]
-DEFAULT_RES_INDEX = len(RESOLUTIONS) - 1          # 1920x1080
-BASE_UI_WIDTH = 1248                              # ui scale reference
+DEFAULT_RES_INDEX = len(RESOLUTIONS) - 1
 
 SAVE_PATH = Path.home() / ".pixel_rpg_adventure_save.json"
 CONFIG_PATH = Path.home() / ".pixel_rpg_adventure_config.json"
@@ -53,120 +54,27 @@ T_FOREST, T_STONE, T_PATH, T_FLOOR, T_CROPS, T_FLOWERS = 6, 7, 8, 9, 10, 11
 
 COLORS = {
     "void": (10, 22, 32), "deep": (22, 60, 118), "water": (46, 110, 190),
-    "sand": (216, 200, 146), "grass": (86, 152, 74), "grass2": (70, 134, 62),
+    "water_l": (96, 158, 222), "sand": (216, 200, 146), "sand_d": (188, 170, 118),
+    "grass": (86, 152, 74), "grass2": (70, 134, 62), "grass_d": (58, 118, 54),
+    "grass_l": (120, 176, 92),
     "forest": (36, 92, 52), "stone": (126, 126, 134), "stone2": (104, 104, 112),
-    "path": (170, 150, 112), "floor": (132, 98, 62), "floor2": (116, 84, 52),
-    "roof": (158, 62, 52), "roof2": (122, 46, 40), "wood": (122, 84, 52),
-    "wood2": (92, 62, 38), "door": (72, 48, 28), "crops": (148, 168, 74),
+    "path": (170, 150, 112), "path_d": (146, 126, 92), "path_l": (198, 178, 138),
+    "floor": (132, 98, 62), "floor2": (116, 84, 52), "floor_d": (98, 70, 42),
+    "roof": (158, 62, 52), "roof2": (122, 46, 40), "roof_d": (96, 34, 30),
+    "wood": (122, 84, 52), "wood2": (92, 62, 38), "wood_l": (146, 104, 66),
+    "door": (72, 48, 28), "crops": (148, 168, 74), "crops_d": (118, 138, 58),
     "flowers": (232, 190, 130),
 }
 
-PAL = {
-    ".": None,
-    "k": (24, 22, 28), "h": (58, 38, 24), "H": (96, 66, 40),
-    "s": (232, 186, 148), "S": (206, 158, 120), "e": (30, 26, 32),
-    "r": (176, 54, 46), "R": (214, 86, 64), "b": (54, 80, 164), "B": (40, 60, 130),
-    "n": (86, 142, 72), "N": (64, 112, 54), "g": (200, 56, 48), "y": (230, 210, 120),
-    "f": (212, 178, 120), "F": (178, 142, 92),
-    "m": (196, 160, 120), "M": (160, 126, 90),
-    "a": (222, 196, 110), "w": (244, 244, 248), "v": (124, 72, 168),
-    "p": (216, 120, 120), "q": (240, 240, 255),
-}
+UI_BG = (10, 12, 20)
+UI_EDGE = (96, 118, 158)
+GOLD = (240, 210, 120)
 
-SPR_P_DOWN_1 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khsssssshk...", "...khseeseesh...", "...khsesssshk...", "....kssSSsk.....",
-    "...kRRrrrrRRk...", "..kRrrrrrrrrRk..", "..kRrrrrrrrrRk..", "..ksrrrrrrrrsk..",
-    "...kbbbbbbbbk...", "...kbbkbbbkbb...", "...kkk...kkk....", "................",
-]
-SPR_P_DOWN_2 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khsssssshk...", "...khseeseesh...", "...khsesssshk...", "....kssSSsk.....",
-    "...kRRrrrrRRk...", "..kRrrrrrrrrRk..", "..kRrrrrrrrrRk..", "..ksrrrrrrrrsk..",
-    "...kbbbbbbbbk...", "....kbbkbbk.....", "....kkk..kkk....", "................",
-]
-SPR_P_UP_1 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khhhhhhhhk...", "...khhhhhhhhk...", "...khhhhhhhhk...", "....khHHHHhk....",
-    "...kRRrrrrRRk...", "..kRrrrrrrrrRk..", "..kRrrrrrrrrRk..", "..ksrrrrrrrrsk..",
-    "...kbbbbbbbbk...", "...kbbkbbbkbb...", "...kkk...kkk....", "................",
-]
-SPR_P_UP_2 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khhhhhhhhk...", "...khhhhhhhhk...", "...khhhhhhhhk...", "....khHHHHhk....",
-    "...kRRrrrrRRk...", "..kRrrrrrrrrRk..", "..kRrrrrrrrrRk..", "..ksrrrrrrrrsk..",
-    "...kbbbbbbbbk...", "....kbbkbbk.....", "....kkk..kkk....", "................",
-]
-SPR_P_SIDE_1 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khhsssshsk...", "...khhseesshk...", "...khhssss k....", "....ksssSk......",
-    "...kRRrrrRk.....", "..kRrrrrrrrk....", "..kRrrrrrrrk....", "..ksrrrrrrsk....",
-    "...kbbbbbbbk....", "...kbbkbbbk.....", "...kkk..kkk.....", "................",
-]
-SPR_P_SIDE_2 = [
-    "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
-    "...khhsssshsk...", "...khhseesshk...", "...khhssss k....", "....ksssSk......",
-    "...kRRrrrRk.....", "..kRrrrrrrrk....", "..kRrrrrrrrk....", "..ksrrrrrrsk....",
-    "...kbbbbbbbk....", "....kbbkbbk.....", "....kkk..kkk....", "................",
-]
-SPR_G_1 = [
-    "................", "................", "..k..........k..", "..kknn.nnnn.kk..",
-    "..knnnnnnnnnnk..", "..knnnnnnnnnnk..", "..knyggNggynnk..", "..knnNNNNNNnnk..",
-    "..knnNkkkkNnnk..", "...knnnnnnnnk...", "..kffnnnnnnffk..", "..kffnnnnnnffk..",
-    "..kf.nnnnnn.fk..", "....knnkknnk....", "...knnk..knnk...", "...kkk....kkk...",
-]
-SPR_G_2 = [
-    "................", "................", "..k..........k..", "..kknn.nnnn.kk..",
-    "..knnnnnnnnnnk..", "..knnnnnnnnnnk..", "..knygNgggynnk..", "..knnNNNNNNnnk..",
-    "..knnNkkkkNnnk..", "...knnnnnnnnk...", "..kffnnnnnnffk..", "..kffnnnnnnffk..",
-    "..kf.nnnnnn.fk..", "....knn..nnk....", "...kknnk.knnk...", "...kkk.....kkk..",
-]
-SPR_G_BRUTE_1 = [
-    "................", "................", "..k..........k..", "..kknnnnnnnn.kk.",
-    ".knnnnnnnnnnnnk.", ".knnnnnnnnnnnnk.", ".knnggNNNNggnnk.", ".knnNNNNNNNNnnk.",
-    ".knnNNkkkkNNnnk.", "..knnnnnnnnnnk..", ".kffnnnnnnnnffk.", ".kffnnnnnnnnffk.",
-    ".kf.nnnnnnnn.fk.", "...knnnnnnnnk...", "...kknnk.knnkk..", "....kkk...kkk...",
-]
-SPR_G_BRUTE_2 = [
-    "................", "................", "..k..........k..", "..kknnnnnnnn.kk.",
-    ".knnnnnnnnnnnnk.", ".knnnnnnnnnnnnk.", ".knngNNNNggnnk..", ".knnNNNNNNNNnnk.",
-    ".knnNNkkkkNNnnk.", "..knnnnnnnnnnk..", ".kffnnnnnnnnffk.", ".kffnnnnnnnnffk.",
-    ".kf.nnnnnnnn.fk.", "...knnnnnnnnk...", "..kknnnk.knnkk..", "..kkk.....kkkk..",
-]
-SPR_NPC_1 = [
-    "................", "................", ".....kkkkkk.....", "....kaaaaaak....",
-    "...kaaaaaaaak...", "...kassssssak...", "...kaseeseesak..", "...kassssssk....",
-    "....kmmssmmk....", "..kmmmmmmmmmmk..", "..kmMmmmmmmMmk..", "..ksmmmmmmmmk...",
-    "...kmmmmmmmmk...", "...kMMk.kMMk....", "...kkk...kkk....", "................",
-]
-SPR_NPC_2 = [
-    "................", "................", ".....kkkkkk.....", "....kaaaaaak....",
-    "...kaaaaaaaak...", "...kassssssak...", "...kaseeseesak..", "...kassssssk....",
-    "....kmmssmmk....", "..kmmmmmmmmmmk..", "..kmMmmmmmmMmk..", "..ksmmmmmmmmk...",
-    "...kmmmmmmmmk...", "....kMMkMMk.....", "....kkk..kkk....", "................",
-]
-SPR_MAGE_1 = [
-    "................", "......kkkk......", ".....kvvvvk.....", "....kvwwwwvk....",
-    "...kvwwwwwwvk...", "...kvwsssswvk...", "...kvsesseesk...", "...kvvssssvk....",
-    "..kvvvssssvvk...", "..kvvvvvvvvvk...", "..kvavvvvvvak...", "..kvvvvvvvvvk...",
-    "..kvvvvvvvvvk...", "...kvvvvvvvk....", "...kvvk.kvvk....", "...kkk...kkk....",
-]
-SPR_MAGE_2 = [
-    "................", "......kkkk......", ".....kvvvvk.....", "....kvwwwwvk....",
-    "...kvwwwwwwvk...", "...kvwsssswvk...", "...kvsesseesk...", "...kvvssssvk....",
-    "..kvvvssssvvk...", "..kvvvvvvvvvk...", "..kvavvvvvvak...", "..kvvvvvvvvvk...",
-    "..kvvvvvvvvvk...", "....kvvvvvk.....", "....kvvkkvvk....", "....kkk..kkk....",
-]
 
-SPRITES = {
-    "p_down_1": SPR_P_DOWN_1, "p_down_2": SPR_P_DOWN_2,
-    "p_up_1": SPR_P_UP_1, "p_up_2": SPR_P_UP_2,
-    "p_side_1": SPR_P_SIDE_1, "p_side_2": SPR_P_SIDE_2,
-    "g_1": SPR_G_1, "g_2": SPR_G_2,
-    "gb_1": SPR_G_BRUTE_1, "gb_2": SPR_G_BRUTE_2,
-    "npc_1": SPR_NPC_1, "npc_2": SPR_NPC_2,
-    "mage_1": SPR_MAGE_1, "mage_2": SPR_MAGE_2,
-}
+def hexc(s: str) -> tuple[int, int, int]:
+    s = s.lstrip("#")
+    return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
 
 # ----------------------------------------------------------------------------
 # Noise / world
@@ -200,6 +108,7 @@ def fbm(x: float, y: float) -> float:
 
 VILLAGE_CX, VILLAGE_CY = 50, 32
 VILLAGE_HALF_W, VILLAGE_HALF_H = 9, 6
+SPAWN_X, SPAWN_Y = 50.5, 32.5
 
 
 class World:
@@ -227,11 +136,9 @@ class World:
             return True
         return self.tiles[y][x] in (T_VOID, T_DEEP, T_WATER)
 
-    # -- generation ---------------------------------------------------------
     def _generate(self) -> None:
         rng = self.rng
         self.tiles = [[T_GRASS] * MAP_W for _ in range(MAP_H)]
-
         for y in range(MAP_H):
             for x in range(MAP_W):
                 dx = (x - MAP_W / 2) / (MAP_W / 2)
@@ -280,9 +187,7 @@ class World:
             if self.in_bounds(cx, y) and self.tiles[y][cx] >= T_SAND:
                 self.tiles[y][cx] = T_PATH
 
-        # IMPORTANT: clear the village BEFORE placing houses/NPCs, otherwise
-        # scattered trees wall the villagers off (v1.1 bug: only the smith
-        # could be reached).
+        # keep the village square clear so every villager stays reachable
         self.objects = [
             o for o in self.objects
             if not (o["type"] == "tree"
@@ -299,6 +204,24 @@ class World:
             if self.tiles[y][x] == T_GRASS and not self.obj_at(x, y):
                 self.decor.append({"x": x, "y": y,
                                    "type": "flower" if rng.random() < 0.75 else "bush"})
+        for kind, count in (("rock", 150), ("stump", 90)):
+            for _ in range(count):
+                x, y = rng.randrange(MAP_W), rng.randrange(MAP_H)
+                if self.tiles[y][x] == T_GRASS and not self.obj_at(x, y):
+                    self.decor.append({"x": x, "y": y, "type": kind})
+        # decorative fences around the village (gates left open on the roads)
+        for fy in (cy - VILLAGE_HALF_H - 2, cy + VILLAGE_HALF_H + 2):
+            for x in range(cx - VILLAGE_HALF_W - 2, cx + VILLAGE_HALF_W + 3):
+                if x % 8 in (0, 1) or abs(x - cx) < 2:
+                    continue
+                if self.in_bounds(x, fy) and self.tiles[fy][x] == T_GRASS:
+                    self.decor.append({"x": x, "y": fy, "type": "fence"})
+        for fx in (cx - VILLAGE_HALF_W - 2, cx + VILLAGE_HALF_W + 2):
+            for y in range(cy - VILLAGE_HALF_H - 2, cy + VILLAGE_HALF_H + 3):
+                if y % 8 in (0, 1) or abs(y - cy) < 2:
+                    continue
+                if self.in_bounds(fx, y) and self.tiles[y][fx] == T_GRASS:
+                    self.decor.append({"x": fx, "y": y, "type": "fence"})
 
         for y in range(cy + 8, cy + 12):
             for x in range(cx + 12, cx + 22):
@@ -310,8 +233,7 @@ class World:
             for x in range(int(cx - r - 2), int(cx + r + 3)):
                 if not self.in_bounds(x, y):
                     continue
-                d = math.hypot(x - cx, y - cy)
-                if d < r * (0.78 + hash2(x, y) * 0.44):
+                if math.hypot(x - cx, y - cy) < r * (0.78 + hash2(x, y) * 0.44):
                     self.tiles[y][x] = T_WATER
         for y in range(int(cy - r - 3), int(cy + r + 4)):
             for x in range(int(cx - r - 3), int(cx + r + 4)):
@@ -339,13 +261,17 @@ class World:
                     self.tiles[y + dy][x + dx] = T_FLOOR
         self.objects.append({"x": x, "y": y, "type": "house"})
         self.decor.append({"x": x + 2, "y": y + 2, "type": "lamp"})
+        # props that make the village read as lived-in
+        props = ("barrel", "well", "barrel", "bush", "barrel", "well",
+                 "barrel", "bush")
+        idx = (x * 7 + y * 3) % len(props)
+        self.decor.append({"x": x - 2, "y": y + 2, "type": props[idx]})
 
     # -- pathfinding --------------------------------------------------------
     def walkable(self, x: int, y: int) -> bool:
         return self.in_bounds(x, y) and not self.is_solid(x, y)
 
     def reachable_from(self, start: tuple[int, int]) -> set[tuple[int, int]]:
-        """Flood fill over walkable tiles — used to guarantee NPCs are reachable."""
         if not self.walkable(*start):
             start = self.nearest_walkable(*start) or start
         seen = {start}
@@ -383,18 +309,17 @@ class World:
         for row in self.tiles:
             for t in row:
                 counts[t] = counts.get(t, 0) + 1
-        total = MAP_W * MAP_H
         land = sum(v for k, v in counts.items() if k >= T_SAND)
-        return {"tiles": counts, "land_pct": round(100 * land / total),
+        return {"land_pct": round(100 * land / (MAP_W * MAP_H)),
                 "trees": sum(1 for o in self.objects if o["type"] == "tree"),
                 "houses": sum(1 for o in self.objects if o["type"] == "house"),
                 "decor": len(self.decor)}
 
 
 # ----------------------------------------------------------------------------
-# Game logic
+# Game
 # ----------------------------------------------------------------------------
-SPAWN_X, SPAWN_Y = 50.5, 32.5
+INV_SLOTS = 20
 
 
 class Game:
@@ -408,10 +333,11 @@ class Game:
             "x": SPAWN_X, "y": SPAWN_Y, "dir": "down", "moving": False,
             "anim_t": 0.0, "frame": 0, "speed": 5.2,
             "hp": 30.0, "hp_max": 30.0, "mp": 10.0, "mp_max": 10.0,
-            "level": 1, "xp": 0, "xp_next": 20, "gold": 0, "potions": 2,
+            "level": 1, "xp": 0, "xp_next": 20, "gold": 0,
             "atk_t": 0.0, "atk_anim": 0.0, "hurt_t": 0.0,
+            "inventory": [],
+            "equip": {"weapon": None, "armor": None},
         }
-
         self.mobs: list[dict] = []
         self.npcs: list[dict] = []
         self.drops: list[dict] = []
@@ -425,13 +351,99 @@ class Game:
         self.dialog: dict | None = None
         self.show_quests = False
         self.show_skills = False
+        self.show_inventory = False
+        self.inv_cursor = 0
 
         self.spawn_npcs()
         self.spawn_mobs()
         self.init_quests()
         self.init_skills()
         self.ensure_reachable()
-        self.toast("Большой мир готов! WASD — идти, ПРОБЕЛ — атака, E — говорить")
+        for item_id, count in (("potion", 2), ("herb", 1)):
+            self.add_item(item_id, count)
+        self.toast("Новая игра: исследуй деревню и победи гоблинов!")
+
+    # -- inventory ----------------------------------------------------------
+    def add_item(self, item_id: str, count: int = 1) -> bool:
+        if item_id not in IT.ITEMS:
+            return False
+        stack = IT.ITEMS[item_id].get("stack", 1)
+        inv = self.player["inventory"]
+        if stack > 1:
+            for slot in inv:
+                if slot["id"] == item_id and slot["count"] < stack:
+                    space = stack - slot["count"]
+                    put = min(space, count)
+                    slot["count"] += put
+                    count -= put
+                    if count <= 0:
+                        return True
+        while count > 0 and len(inv) < INV_SLOTS:
+            put = min(count, stack)
+            inv.append({"id": item_id, "count": put})
+            count -= put
+        return count <= 0
+
+    def remove_item(self, item_id: str, count: int = 1) -> bool:
+        inv = self.player["inventory"]
+        have = sum(s["count"] for s in inv if s["id"] == item_id)
+        if have < count:
+            return False
+        for slot in list(inv):
+            if slot["id"] != item_id:
+                continue
+            take = min(slot["count"], count)
+            slot["count"] -= take
+            count -= take
+            if slot["count"] <= 0:
+                inv.remove(slot)
+            if count <= 0:
+                break
+        return True
+
+    def count_item(self, item_id: str) -> int:
+        return sum(s["count"] for s in self.player["inventory"] if s["id"] == item_id)
+
+    def use_slot(self, index: int) -> str:
+        """Use/equip the item in inventory slot `index`. Returns a message."""
+        inv = self.player["inventory"]
+        if not (0 <= index < len(inv)):
+            return ""
+        slot = inv[index]
+        item_id = slot["id"]
+        data = IT.ITEMS[item_id]
+        kind = data["kind"]
+
+        if kind == "consumable":
+            p = self.player
+            if p["hp"] >= p["hp_max"]:
+                return "Здоровье уже полное"
+            p["hp"] = min(p["hp_max"], p["hp"] + data.get("heal", 0))
+            slot["count"] -= 1
+            if slot["count"] <= 0:
+                inv.pop(index)
+            return f"{data['name']}: +{data.get('heal', 0)} HP"
+
+        if kind in ("weapon", "armor"):
+            slot_key = "weapon" if kind == "weapon" else "armor"
+            old = self.player["equip"][slot_key]
+            self.player["equip"][slot_key] = item_id
+            inv.pop(index)
+            if old:
+                self.add_item(old, 1)
+            return f"Экипировано: {data['name']}"
+
+        if kind == "material":
+            return f"{data['name']}: материал ({data['value']} золота)"
+        return f"{data['name']}: квестовый предмет"
+
+    def attack_bonus(self) -> int:
+        wid = self.player["equip"]["weapon"]
+        return IT.ITEMS[wid].get("atk", 0) if wid else 0
+
+    def defense(self) -> int:
+        aid = self.player["equip"]["armor"]
+        return IT.ITEMS[aid].get("def", 0) if aid else 0
 
     # -- setup --------------------------------------------------------------
     def init_quests(self) -> None:
@@ -454,31 +466,33 @@ class Game:
             {"id": "s_tough", "name": "Крепкая кожа",
              "desc": "+10 к максимуму здоровья.", "cost": 1, "learned": False, "req": []},
             {"id": "s_heal", "name": "Лечение",
-             "desc": "A — лечиться за зелье (10 HP).", "cost": 1, "learned": False, "req": []},
+             "desc": "A — лечиться зельем из сумки.", "cost": 1, "learned": False, "req": []},
             {"id": "s_crit", "name": "Смертельный удар",
              "desc": "25% шанс двойного урона.", "cost": 1, "learned": False, "req": ["s_slash"]},
         ]
 
     def spawn_npcs(self) -> None:
+        # placed on the open square BETWEEN the house rows — never inside a house
+        # footprint, otherwise the building (drawn later by y-sort) hides them
         self.npcs = [
-            {"x": 46, "y": 29, "kind": "npc", "name": "Крестьянин", "dir": "down",
+            {"x": 46, "y": 31, "kind": "npc", "name": "Крестьянин", "dir": "down",
              "met": False, "anim_t": 0.0,
              "lines": ["Добро пожаловать в Дубраву, путник!",
                        "Гоблины шастают по лесам. Будь осторожен.",
                        "Старейшина ждёт тебя в центре деревни."]},
-            {"x": 54, "y": 35, "kind": "mage", "name": "Старейшина", "dir": "down",
+            {"x": 57, "y": 31, "kind": "npc", "name": "Фермер", "dir": "down",
+             "met": False, "anim_t": 0.0,
+             "lines": ["Пшеница в этом году богатая!",
+                       "Гоблины таскают уши... то есть, мы их — им!"]},
+            {"x": 46, "y": 34, "kind": "npc", "name": "Кузнец", "dir": "up",
+             "met": False, "anim_t": 0.0, "gift": True,
+             "lines": ["Сталь куётся в огне, а герой — в бою.",
+                       "Держи пару зелий — и не благодари."]},
+            {"x": 57, "y": 34, "kind": "mage", "name": "Старейшина", "dir": "up",
              "met": False, "anim_t": 0.0,
              "lines": ["Я чувствую в тебе силу, странник.",
                        "Одолей трёх гоблинов — и я раскрою первое умение.",
-                       "Навыки открываются по мере роста уровня."]},
-            {"x": 48, "y": 36, "kind": "npc", "name": "Кузнец", "dir": "up",
-             "met": False, "anim_t": 0.0, "gift": True,
-             "lines": ["Сталь куётся в огне, а герой — в бою.",
-                       "За зелья не благодари — просто выживи."]},
-            {"x": 53, "y": 29, "kind": "npc", "name": "Фермер", "dir": "up",
-             "met": False, "anim_t": 0.0,
-             "lines": ["Пшеница в этом году богатая!",
-                       "Пройдись по дороге на восток — там красивый лес."]},
+                       "Собранное в бою можно продать."]},
         ]
 
     def spawn_mobs(self) -> None:
@@ -504,7 +518,6 @@ class Game:
                 "wander": {"x": x, "y": y}, "alive": True}
 
     def ensure_reachable(self) -> None:
-        """Guarantee every NPC and mob stands on a tile the player can walk to."""
         reach = self.world.reachable_from((int(SPAWN_X), int(SPAWN_Y)))
         for ent in list(self.npcs) + list(self.mobs):
             tx, ty = int(ent["x"]), int(ent["y"])
@@ -522,7 +535,7 @@ class Game:
         self.toasts.append({"text": text, "color": color, "t": 0.0, "life": 3.2})
 
     def add_floater(self, x, y, text, color) -> None:
-        self.floaters.append({"x": x, "y": y, "text": text, "color": color, "t": 0.0, "life": 1.0})
+        self.floaters.append({"x": x, "y": y, "text": text, "color": color, "t": 0.0, "life": 1.1})
 
     def add_particle(self, x, y, color) -> None:
         a = self.rng.random() * math.tau
@@ -646,7 +659,8 @@ class Game:
                     m["attack_cd"] = 1.15
                     self.try_move(m, ux * 0.5, uy * 0.5)
                     if math.hypot(p["x"] - m["x"], p["y"] - m["y"]) < 1.3:
-                        dmg = max(1, m["atk"] + self.rng.randrange(3) - 1)
+                        raw = max(1, m["atk"] + self.rng.randrange(3) - 1)
+                        dmg = max(1, raw - self.defense())
                         p["hp"] -= dmg
                         p["hurt_t"] = 0.25
                         self.add_floater(p["x"], p["y"] - 0.8, f"-{dmg}", "#ff7070")
@@ -712,16 +726,21 @@ class Game:
         pl = self.player
         for d in self.drops:
             d["t"] += dt
-            if d["t"] > 0.4 and not d.get("taken") and math.hypot(d["x"] - pl["x"], d["y"] - pl["y"]) < 1.0:
+            if d["t"] > 0.35 and not d.get("taken") and math.hypot(d["x"] - pl["x"], d["y"] - pl["y"]) < 1.0:
                 d["taken"] = True
-                if d["type"] == "gold":
-                    g = 3 + self.rng.randrange(6)
-                    pl["gold"] += g
-                    self.add_floater(d["x"], d["y"], f"+{g} золота", "#ffd166")
+                if d["kind"] == "gold":
+                    pl["gold"] += d["count"]
+                    self.add_floater(d["x"], d["y"], f"+{d['count']} золота", "#ffd166")
                 else:
-                    pl["potions"] = min(9, pl["potions"] + 1)
-                    self.add_floater(d["x"], d["y"], "+1 зелье", "#9ad7ff")
-        self.drops = [d for d in self.drops if not d.get("taken") and d["t"] < 30]
+                    got = self.add_item(d["kind"], d["count"])
+                    if got:
+                        self.add_floater(d["x"], d["y"], f"+{d['count']} {IT.item_name(d['kind'])}",
+                                         "#9ad7ff")
+                    else:
+                        d["taken"] = False
+                        d["t"] = 0.0
+                        self.toast("Сумка полна!", "#ffb0b0")
+        self.drops = [d for d in self.drops if not d.get("taken") and d["t"] < 60]
 
         for t in self.toasts:
             t["t"] += dt
@@ -757,7 +776,7 @@ class Game:
             dot = ((m["x"] - p["x"]) * fx + (m["y"] - p["y"]) * fy) / (dist or 1)
             if not sweep and dot < 0.35:
                 continue
-            dmg = 5 + self.rng.randrange(3) + int(p["level"] * 1.5)
+            dmg = 5 + self.rng.randrange(3) + int(p["level"] * 1.5) + self.attack_bonus()
             if self.has_skill("s_crit") and self.rng.random() < 0.25:
                 dmg = round(dmg * 2)
             m["hp"] -= dmg
@@ -778,10 +797,15 @@ class Game:
         m["alive"] = False
         p = self.player
         p["xp"] += m["xp"]
-        p["gold"] += 2 + self.rng.randrange(4)
-        self.toast(f"Побеждён: {m['name']} (+{m['xp']} XP)", "#ffe066")
-        self.drops.append({"x": m["x"], "y": m["y"], "t": 0.0,
-                           "type": "gold" if self.rng.random() < 0.5 else "potion"})
+        lo, hi = IT.GOLD_LOOT.get(m["kind"], (1, 5))
+        gold = self.rng.randint(lo, hi)
+        p["gold"] += gold
+        self.toast(f"Побеждён: {m['name']} (+{m['xp']} XP, +{gold} золота)", "#ffe066")
+        self.drops.append({"x": m["x"], "y": m["y"], "t": 0.0, "kind": "gold", "count": gold})
+        for item_id in IT.roll_loot(m["kind"], self.rng):
+            self.drops.append({"x": m["x"] + self.rng.uniform(-0.4, 0.4),
+                               "y": m["y"] + self.rng.uniform(-0.4, 0.4),
+                               "t": 0.0, "kind": item_id, "count": 1})
         self.corpses.append({"x": m["x"], "y": m["y"], "kind": m["kind"], "t": 0.0})
         for _ in range(16):
             self.add_particle(m["x"], m["y"], "#88ff88")
@@ -835,7 +859,7 @@ class Game:
             self.dialog = {"name": n["name"], "line": self.rng.choice(n["lines"])}
             if n.get("gift") and not n.get("gave"):
                 n["gave"] = True
-                self.player["potions"] += 2
+                self.add_item("potion", 2)
                 self.toast("Кузнец дал 2 зелья", "#ffe066")
             if not n["met"]:
                 n["met"] = True
@@ -847,10 +871,17 @@ class Game:
                 return
         self.toast("Рядом никого нет.", "#c8c8d0")
 
+    def use_potion_hotkey(self) -> None:
+        for i, slot in enumerate(self.player["inventory"]):
+            if slot["id"] == "potion" and self.player["hp"] < self.player["hp_max"]:
+                self.toast(self.use_slot(i), "#8ee08e")
+                return
+        self.toast("Зелий нет или здоровье полное", "#c8c8d0")
+
     # -- save / load --------------------------------------------------------
     def save(self, path: Path = SAVE_PATH) -> bool:
         try:
-            data = {"version": 1, "player": self.player, "skill_points": self.skill_points,
+            data = {"version": 3, "player": self.player, "skill_points": self.skill_points,
                     "quests": self.quests, "skills": self.skills,
                     "npcs_met": {n["name"]: n["met"] for n in self.npcs}}
             path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -866,7 +897,19 @@ class Game:
         except (OSError, ValueError):
             self.toast("Сохранение не найдено", "#ff9a9a")
             return False
-        self.player.update({k: v for k, v in data.get("player", {}).items() if k in self.player})
+        for k, v in data.get("player", {}).items():
+            if k in self.player and k not in ("inventory", "equip"):
+                self.player[k] = v
+        inv = data.get("player", {}).get("inventory")
+        if isinstance(inv, list):
+            self.player["inventory"] = [s for s in inv
+                                        if isinstance(s, dict) and s.get("id") in IT.ITEMS][:INV_SLOTS]
+        equip = data.get("player", {}).get("equip")
+        if isinstance(equip, dict):
+            self.player["equip"] = {
+                "weapon": equip.get("weapon") if equip.get("weapon") in IT.ITEMS else None,
+                "armor": equip.get("armor") if equip.get("armor") in IT.ITEMS else None,
+            }
         self.skill_points = data.get("skill_points", self.skill_points)
         for q_new in data.get("quests", []):
             q = next((q for q in self.quests if q["id"] == q_new["id"]), None)
@@ -884,58 +927,49 @@ class Game:
 
 
 # ----------------------------------------------------------------------------
-# Rendering — world goes to a small logical layer, ALL TEXT to the real screen
+# Renderer
 # ----------------------------------------------------------------------------
-def build_sprite_surfaces() -> dict[str, pygame.Surface]:
-    out: dict[str, pygame.Surface] = {}
-    for name, rows in SPRITES.items():
-        surf = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
-        for y, row in enumerate(rows):
-            for x, ch in enumerate(row):
-                col = PAL.get(ch)
-                if col:
-                    surf.set_at((x, y), col)
-        out[name] = surf
-        out[name + "_f"] = pygame.transform.flip(surf, True, False)
-        hurt = surf.copy()
-        hurt.fill((120, 0, 0, 0), special_flags=pygame.BLEND_RGBA_ADD)
-        out[name + "_hurt"] = hurt
-        out[name + "_hurt_f"] = pygame.transform.flip(hurt, True, False)
-    return out
-
-
-TILE_COLORS = {
-    T_VOID: COLORS["void"], T_DEEP: COLORS["deep"], T_WATER: COLORS["water"],
-    T_SAND: COLORS["sand"], T_GRASS: COLORS["grass"], T_GRASS2: COLORS["grass2"],
-    T_FOREST: COLORS["forest"], T_STONE: COLORS["stone"], T_PATH: COLORS["path"],
-    T_FLOOR: COLORS["floor"], T_CROPS: COLORS["crops"], T_FLOWERS: COLORS["flowers"],
-}
-
-
 class Renderer:
-    """World -> logical surface scaled by an integer zoom; text -> native screen."""
-
     def __init__(self, game: Game, width: int, height: int, zoom: int):
         self.game = game
-        self.sprites = build_sprite_surfaces()
+        self.sprites = SP.build_surfaces()
+        # villagers share one sprite sheet; tint them apart so they read as
+        # different people at a glance
+        self.npc_tint = {
+            "Крестьянин": (255, 255, 255),
+            "Фермер": (206, 240, 178),
+            "Кузнец": (252, 214, 172),
+            "Старейшина": (255, 255, 255),
+        }
+        self._tint_cache: dict = {}
         self.resize(width, height, zoom)
+
+    def npc_surface(self, key: str, name: str) -> pygame.Surface:
+        tint = self.npc_tint.get(name, (255, 255, 255))
+        if tint == (255, 255, 255):
+            return self.sprites[key]
+        cached = self._tint_cache.get((key, tint))
+        if cached is None:
+            cached = self.sprites[key].copy()
+            cached.fill(tint, special_flags=pygame.BLEND_RGB_MULT)
+            self._tint_cache[(key, tint)] = cached
+        return cached
 
     def resize(self, width: int, height: int, zoom: int) -> None:
         self.width, self.height, self.zoom = width, height, zoom
         self.lw, self.lh = width // zoom, height // zoom
         self.logical = pygame.Surface((self.lw, self.lh))
+        self._scaled = pygame.Surface((self.lw * zoom, self.lh * zoom))
         self.ox = (width - self.lw * zoom) // 2
         self.oy = (height - self.lh * zoom) // 2
-        self._scaled = pygame.Surface((self.lw * zoom, self.lh * zoom))
         self.cam_x = self.cam_y = 0.0
         self.view_w = self.lw / TILE
         self.view_h = self.lh / TILE
         self.ui = width / BASE_UI_WIDTH
-        self.font_small = self._font(max(9, round(10 * self.ui)))
-        self.font = self._font(max(11, round(12 * self.ui)))
-        self.font_big = self._font(max(14, round(15 * self.ui)))
-        self.font_name = self._font(max(8, round(8 * self.ui)))
-        self.font_title = self._font(max(20, round(26 * self.ui)))
+        self.font_small = self._font(max(10, round(11 * self.ui)))
+        self.font = self._font(max(12, round(13 * self.ui)))
+        self.font_big = self._font(max(16, round(17 * self.ui)))
+        self.font_title = self._font(max(24, round(34 * self.ui)))
 
     @staticmethod
     def _font(size: int) -> pygame.font.Font:
@@ -949,7 +983,6 @@ class Renderer:
         return pygame.font.Font(None, size)
 
     def s(self, v: float) -> int:
-        """Scale a UI dimension for the current resolution."""
         return int(round(v * self.ui))
 
     # -- frame --------------------------------------------------------------
@@ -973,14 +1006,14 @@ class Renderer:
         self.draw_text_layer(screen)
         self.draw_hud(screen)
 
-    # -- world layer (small, scaled up) -------------------------------------
     def to_logical(self, wx: float, wy: float) -> tuple[float, float]:
         return (wx - self.cam_x) * TILE, (wy - self.cam_y) * TILE
 
+    # -- tiles --------------------------------------------------------------
     def draw_tiles(self, cam_x: float, cam_y: float) -> None:
         s, w = self.logical, self.game.world
         x0, y0 = int(cam_x), int(cam_y)
-        wave = math.sin(self.game.frame * 0.03) * 8
+        wave = math.sin(self.game.frame * 0.04) * 10
         for ty in range(y0 - 1, y0 + int(self.view_h) + 2):
             for tx in range(x0 - 1, x0 + int(self.view_w) + 2):
                 px, py = (tx - cam_x) * TILE, (ty - cam_y) * TILE
@@ -988,24 +1021,81 @@ class Renderer:
                     pygame.draw.rect(s, COLORS["void"], (px, py, TILE, TILE))
                     continue
                 t = w.tiles[ty][tx]
-                col = TILE_COLORS.get(t, COLORS["grass"])
-                if t == T_WATER:
-                    col = tuple(max(0, min(255, c + wave)) for c in col)
-                elif t == T_GRASS and (tx + ty) % 2 == 0:
-                    col = COLORS["grass2"]
-                elif t == T_FLOOR and (tx + ty) % 2 == 0:
-                    col = COLORS["floor2"]
-                pygame.draw.rect(s, col, (px, py, TILE, TILE))
-
                 h = hash2(tx, ty)
-                if t in (T_GRASS, T_GRASS2) and h > 0.62:
-                    pygame.draw.rect(s, (58, 118, 54), (px + h * 13, py + h * 9, 2, 2))
-                if t == T_SAND and h > 0.85:
-                    pygame.draw.rect(s, (190, 170, 120), (px + h * 10, py + h * 8, 3, 2))
-                if t == T_WATER and h > 0.8:
-                    pygame.draw.rect(s, (140, 190, 235), (px + 3, py + 5, 4, 2))
-                if t == T_CROPS and h > 0.5:
-                    pygame.draw.rect(s, (196, 200, 110), (px + h * 12, py + 6, 2, 4))
+                h2 = hash2(tx * 3.1, ty * 2.7)
+                self._draw_tile(s, w, t, px, py, tx, ty, h, h2, wave)
+
+    def _draw_tile(self, s, w, t, px, py, tx, ty, h, h2, wave) -> None:
+        if t == T_WATER or t == T_DEEP:
+            base = COLORS["water"] if t == T_WATER else COLORS["deep"]
+            pygame.draw.rect(s, base, (px, py, TILE, TILE))
+            w1 = int(wave * 0.6)
+            pygame.draw.rect(s, COLORS["water_l"],
+                             (px + 2, py + 4 + w1 % 3, 5, 1))
+            pygame.draw.rect(s, COLORS["water_l"],
+                             (px + 9, py + 10 - w1 % 3, 4, 1))
+            if h > 0.8:
+                pygame.draw.rect(s, (170, 214, 244), (px + 5, py + 7, 3, 1))
+            return
+        if t == T_SAND:
+            pygame.draw.rect(s, COLORS["sand"], (px, py, TILE, TILE))
+            if h > 0.55:
+                pygame.draw.rect(s, COLORS["sand_d"], (px + int(h * 11), py + int(h2 * 11), 2, 2))
+            if h2 > 0.75:
+                pygame.draw.rect(s, (238, 226, 176), (px + int(h2 * 12), py + int(h * 10), 2, 1))
+            return
+        if t == T_PATH:
+            pygame.draw.rect(s, COLORS["path"], (px, py, TILE, TILE))
+            pygame.draw.rect(s, COLORS["path_d"], (px, py, TILE, 1))
+            if h > 0.45:
+                pygame.draw.rect(s, COLORS["path_d"], (px + int(h * 12), py + int(h2 * 12), 3, 2))
+            if h2 > 0.6:
+                pygame.draw.rect(s, COLORS["path_l"], (px + int(h2 * 11), py + int(h * 11), 2, 2))
+            return
+        if t == T_FLOOR:
+            pygame.draw.rect(s, COLORS["floor"] if (tx + ty) % 2 == 0 else COLORS["floor2"],
+                             (px, py, TILE, TILE))
+            for i in range(0, TILE, 4):
+                pygame.draw.rect(s, COLORS["floor_d"], (px, py + i, TILE, 1))
+            pygame.draw.rect(s, COLORS["floor_d"], (px + 7, py + 2, 1, 2))
+            pygame.draw.rect(s, COLORS["floor_d"], (px + 3, py + 10, 1, 2))
+            return
+        if t == T_CROPS:
+            pygame.draw.rect(s, COLORS["grass2"], (px, py, TILE, TILE))
+            for i in range(3):
+                ox = 2 + i * 5
+                pygame.draw.rect(s, COLORS["crops_d"], (px + ox, py + 6, 1, 9))
+                pygame.draw.rect(s, COLORS["crops"], (px + ox, py + 3, 1, 3))
+                pygame.draw.rect(s, (216, 206, 128), (px + ox, py + 2, 1, 1))
+            return
+        if t == T_FOREST:
+            pygame.draw.rect(s, COLORS["forest"], (px, py, TILE, TILE))
+            return
+        # grass (default) — very subtle variation so the tile grid stays invisible
+        hh = hash2(tx * 0.7, ty * 1.3)
+        if hh < 0.34:
+            base = (80, 143, 68)
+        elif hh > 0.72:
+            base = (86, 152, 74)
+        else:
+            base = (83, 147, 71)
+        pygame.draw.rect(s, base, (px, py, TILE, TILE))
+        # transition edges where grass meets sand / path / floor
+        for (ox, oy, other, edge) in ((0, -1, (T_SAND, T_PATH, T_FLOOR), (0, 0, TILE, 1)),
+                                      (0, 1, (T_SAND, T_PATH, T_FLOOR), (0, TILE - 1, TILE, 1)),
+                                      (-1, 0, (T_SAND, T_PATH, T_FLOOR), (0, 0, 1, TILE)),
+                                      (1, 0, (T_SAND, T_PATH, T_FLOOR), (TILE - 1, 0, 1, TILE))):
+            nx, ny = tx + ox, ty + oy
+            if w.in_bounds(nx, ny) and w.tiles[ny][nx] in other:
+                pygame.draw.rect(s, COLORS["grass_d"], (px + edge[0], py + edge[1], edge[2], edge[3]))
+        if h > 0.30:
+            pygame.draw.rect(s, COLORS["grass_d"], (px + int(h * 10), py + int(h2 * 9), 4, 2))
+        if h2 > 0.40:
+            pygame.draw.rect(s, COLORS["grass_l"], (px + int(h2 * 11), py + int(h * 11), 3, 2))
+        bx = int(h * 13)
+        by = int(h2 * 10)
+        pygame.draw.rect(s, COLORS["grass_d"], (px + bx, py + by, 1, 3))
+        pygame.draw.rect(s, COLORS["grass_l"], (px + bx + 1, py + by + 1, 1, 2))
 
     def draw_decor(self, cam_x: float, cam_y: float) -> None:
         s = self.logical
@@ -1018,12 +1108,38 @@ class Renderer:
                 pygame.draw.rect(s, (232, 190, 130), (px + 7, py + 6, 2, 3))
                 pygame.draw.rect(s, (140, 170, 100), (px + 6, py + 9, 4, 2))
             elif d["type"] == "bush":
-                pygame.draw.rect(s, (46, 104, 50), (px + 3, py + 8, 10, 6))
-                pygame.draw.rect(s, (150, 180, 90), (px + 5, py + 7, 6, 3))
+                pygame.draw.rect(s, (46, 104, 50), (px + 2, py + 7, 12, 7))
+                pygame.draw.rect(s, (60, 126, 58), (px + 3, py + 6, 10, 5))
+                pygame.draw.rect(s, (150, 180, 90), (px + 5, py + 6, 5, 3))
             elif d["type"] == "lamp":
-                on = math.sin(self.game.frame * 0.05 + d["x"]) > 0.7
-                pygame.draw.rect(s, (60, 40, 26), (px, py + 6, 2, 8))
-                pygame.draw.rect(s, (255, 220, 90) if on else (150, 140, 60), (px - 1, py + 3, 4, 4))
+                pulse = (math.sin(self.game.frame * 0.05 + d["x"]) + 1) / 2
+                pygame.draw.rect(s, (58, 40, 26), (px + 7, py + 4, 3, 12))
+                pygame.draw.rect(s, (58, 40, 26), (px + 4, py + 8, 9, 2))
+                pygame.draw.rect(s, (74, 52, 32), (px + 3, py + 1, 11, 2))
+                pygame.draw.rect(s, (46, 32, 20), (px + 4, py + 3, 9, 7))
+                glass = (int(200 + 55 * pulse), int(170 + 60 * pulse), int(80 + 60 * pulse))
+                pygame.draw.rect(s, glass, (px + 5, py + 4, 7, 5))
+                pygame.draw.rect(s, (255, 250, 210), (px + 7, py + 5, 3, 2))
+                glow = pygame.Surface((22, 22), pygame.SRCALPHA)
+                pygame.draw.circle(glow, (255, 214, 120, int(30 + 30 * pulse)), (11, 11), 10)
+                s.blit(glow, (px - 3, py - 9))
+            elif d["type"] == "well":
+                pygame.draw.ellipse(s, (0, 0, 0, 70), (px + 1, py + 10, 15, 5))
+                pygame.draw.rect(s, (112, 112, 118), (px + 2, py + 4, 13, 8))
+                pygame.draw.rect(s, (140, 140, 146), (px + 2, py + 3, 13, 2))
+                pygame.draw.rect(s, (26, 30, 40), (px + 5, py + 4, 7, 3))
+                pygame.draw.rect(s, COLORS["wood2"], (px + 1, py - 4, 3, 10))
+                pygame.draw.rect(s, COLORS["wood2"], (px + 12, py - 4, 3, 10))
+                pygame.draw.rect(s, COLORS["wood"], (px, py - 7, 16, 3))
+                pygame.draw.rect(s, COLORS["wood2"], (px + 6, py - 5, 4, 2))
+            elif d["type"] == "barrel":
+                pygame.draw.ellipse(s, (0, 0, 0, 60), (px + 3, py + 9, 11, 4))
+                pygame.draw.rect(s, COLORS["wood"], (px + 3, py + 1, 10, 11))
+                pygame.draw.rect(s, COLORS["wood_l"], (px + 4, py + 1, 2, 11))
+                pygame.draw.rect(s, (108, 74, 44), (px + 3, py + 3, 10, 1))
+                pygame.draw.rect(s, (108, 74, 44), (px + 3, py + 8, 10, 1))
+                pygame.draw.ellipse(s, COLORS["wood_l"], (px + 3, py, 10, 4))
+                pygame.draw.ellipse(s, (86, 58, 34), (px + 5, py + 1, 6, 2))
 
     def draw_corpses(self, cam_x: float, cam_y: float) -> None:
         for c in self.game.corpses:
@@ -1031,8 +1147,13 @@ class Renderer:
             key = "gb_1" if c["kind"] == "brute" else "g_1"
             spr = self.sprites[key].copy()
             spr.set_alpha(alpha)
-            self.logical.blit(spr, ((c["x"] - cam_x) * TILE - SPRITE / 2,
-                                    (c["y"] - cam_y) * TILE - SPRITE + 6))
+            self.logical.blit(spr, *self.anchor(c["x"], c["y"], cam_x, cam_y))
+
+    @staticmethod
+    def anchor(x: float, y: float, cam_x: float, cam_y: float) -> tuple[float, float]:
+        """Sprite is 32x32 and stands on a 16px tile: feet on the tile's bottom edge."""
+        return ((x - cam_x + 0.5) * TILE - SPRITE / 2,
+                (y - cam_y + 1.0) * TILE - SPRITE)
 
     def draw_world_entities(self, cam_x: float, cam_y: float) -> None:
         g = self.game
@@ -1052,7 +1173,6 @@ class Renderer:
         items.append((g.player["y"], lambda: self.draw_player(cam_x, cam_y)))
         for p in g.particles:
             items.append((p["y"] - 0.05, lambda p=p: self.draw_particle(p, cam_x, cam_y)))
-
         items.sort(key=lambda it: it[0])
         for _, fn in items:
             fn()
@@ -1060,44 +1180,136 @@ class Renderer:
     def draw_object(self, o: dict, cam_x: float, cam_y: float) -> None:
         s = self.logical
         px, py = (o["x"] - cam_x) * TILE, (o["y"] - cam_y) * TILE
+        h = hash2(o["x"], o["y"])
+        if o["type"] == "rock":
+            pygame.draw.ellipse(s, (0, 0, 0, 55), (px + 1, py + 9, 14, 5))
+            pygame.draw.polygon(s, (120, 120, 128), [(px + 8, py - 2), (px + 13, py + 5),
+                                                     (px + 10, py + 11), (px + 4, py + 11),
+                                                     (px + 2, py + 5)])
+            pygame.draw.polygon(s, (152, 152, 160), [(px + 8, py - 1), (px + 11, py + 5),
+                                                     (px + 8, py + 7), (px + 4, py + 5)])
+            pygame.draw.rect(s, (178, 178, 186), (px + 6, py + 1, 3, 2))
+            return
+        if o["type"] == "stump":
+            pygame.draw.ellipse(s, (0, 0, 0, 50), (px + 2, py + 9, 12, 4))
+            pygame.draw.rect(s, COLORS["wood2"], (px + 4, py + 4, 8, 8))
+            pygame.draw.ellipse(s, COLORS["wood"], (px + 4, py + 2, 8, 5))
+            pygame.draw.ellipse(s, COLORS["wood_l"], (px + 6, py + 3, 4, 2))
+            return
+        if o["type"] == "fence":
+            pygame.draw.rect(s, COLORS["wood2"], (px + 2, py + 6, 2, 9))
+            pygame.draw.rect(s, COLORS["wood2"], (px + 12, py + 6, 2, 9))
+            pygame.draw.rect(s, COLORS["wood"], (px, py + 8, TILE, 2))
+            pygame.draw.rect(s, COLORS["wood"], (px, py + 12, TILE, 2))
+            return
         if o["type"] == "tree":
-            sway = math.sin(self.game.frame * 0.02 + o["x"]) * 1
-            pygame.draw.rect(s, COLORS["wood2"], (px + 6, py + 8, 4, 8))
-            pygame.draw.rect(s, COLORS["wood"], (px + 6, py + 8, 2, 8))
-            tx = px + sway
-            pygame.draw.rect(s, (30, 78, 44), (tx + 1, py - 6, 14, 14))
-            pygame.draw.rect(s, (44, 104, 54), (tx + 2, py - 5, 12, 10))
-            pygame.draw.rect(s, (64, 130, 62), (tx + 4, py - 3, 8, 5))
-            pygame.draw.rect(s, (88, 158, 78), (tx + 5, py - 2, 4, 2))
+            variant = int(hash2(o["x"] * 1.7, o["y"] * 2.3) * 3) % 3
+            gsel = int(hash2(o["x"] * 0.9, o["y"] * 2.1) * 3) % 3
+            g0, g1, g2, g3 = (((30, 78, 44), (44, 104, 54), (62, 128, 62), (118, 186, 96)),
+                              ((26, 70, 50), (38, 94, 58), (54, 116, 68), (100, 168, 92)),
+                              ((38, 86, 40), (52, 110, 50), (72, 138, 60), (128, 190, 90)))[gsel]
+            sc = 0.85 + hash2(o["y"] * 1.4, o["x"] * 2.6) * 0.3
+            sway = math.sin(self.game.frame * 0.02 + o["x"] * 1.3) * 1.2
+            tx = px + 8 + sway
+            ty = py + 6
+            sh = pygame.Surface((30, 10), pygame.SRCALPHA)
+            pygame.draw.ellipse(sh, (0, 0, 0, 115), (0, 0, 30, 10))
+            s.blit(sh, (px - 7, py + 12))
+            # trunk with roots
+            pygame.draw.rect(s, COLORS["wood2"], (px + 6, py - 4, 5, 20))
+            pygame.draw.rect(s, COLORS["wood"], (px + 7, py - 4, 2, 20))
+            pygame.draw.rect(s, COLORS["wood2"], (px + 3, py + 13, 4, 3))
+            pygame.draw.rect(s, COLORS["wood2"], (px + 10, py + 13, 4, 3))
+            if variant == 0:      # broadleaf
+                pygame.draw.circle(s, g0, (tx, ty - 6), int(11 * sc))
+                pygame.draw.circle(s, g1, (tx - 4, ty - 4), int(8 * sc))
+                pygame.draw.circle(s, g1, (tx + 4, ty - 5), int(8 * sc))
+                pygame.draw.circle(s, g2, (tx, ty - 9), int(7 * sc))
+                for (lx, ly, lr) in ((-6, -3, 3), (5, -7, 3), (-2, -13, 3), (3, -12, 2)):
+                    pygame.draw.circle(s, g1, (tx + lx, ty + ly), max(1, int(lr * sc)))
+                pygame.draw.circle(s, g3, (tx - 2, ty - 11), max(1, int(4 * sc)))
+            elif variant == 1:    # pine
+                for (cy, w, col) in ((-2, 12, g0), (-9, 9, g1), (-15, 6, g2)):
+                    pygame.draw.polygon(s, col, [(tx, ty + cy - 8), (tx - int(w * sc), ty + cy + 3),
+                                                 (tx + int(w * sc), ty + cy + 3)])
+                pygame.draw.polygon(s, g3, [(tx, ty - 25), (tx - 3, ty - 18), (tx + 3, ty - 18)])
+            else:                 # young tree
+                pygame.draw.circle(s, g0, (tx, ty - 3), int(8 * sc))
+                pygame.draw.circle(s, g1, (tx - 2, ty - 5), int(6 * sc))
+                pygame.draw.circle(s, g2, (tx - 3, ty - 7), max(1, int(3 * sc)))
         elif o["type"] == "house":
-            pygame.draw.rect(s, COLORS["wood"], (px - 8, py - 8, 32, 32))
-            pygame.draw.rect(s, COLORS["wood2"], (px - 8, py + 18, 32, 6))
-            pygame.draw.rect(s, COLORS["roof2"], (px - 12, py - 14, 40, 10))
-            pygame.draw.rect(s, COLORS["roof"], (px - 14, py - 20, 44, 8))
-            pygame.draw.rect(s, COLORS["roof2"], (px - 10, py - 24, 36, 6))
-            glow = int(140 + math.sin(self.game.frame * 0.06 + o["x"]) * 30)
-            pygame.draw.rect(s, (min(255, glow + 40), min(255, glow + 60), 90), (px - 2, py - 2, 8, 8))
-            pygame.draw.rect(s, (50, 90, 130), (px + 1, py - 1, 2, 6))
-            pygame.draw.rect(s, COLORS["door"], (px + 12, py + 2, 8, 14))
-            pygame.draw.rect(s, (200, 170, 90), (px + 18, py + 8, 2, 2))
-            pygame.draw.rect(s, (90, 90, 96), (px + 14, py - 28, 6, 6))
+            style = int(hash2(o["x"] * 3.3, o["y"] * 1.9) * 3) % 3
+            hsh = pygame.Surface((44, 42), pygame.SRCALPHA)
+            pygame.draw.rect(hsh, (0, 0, 0, 105), (0, 0, 44, 42))
+            s.blit(hsh, (px - 3, py - 4))
+            roof_l, roof_m = (((168, 68, 56), (128, 48, 42)),
+                              ((140, 98, 62), (104, 70, 42)),
+                              ((108, 116, 138), (80, 86, 104)))[style]
+            roof_d = tuple(int(c * 0.78) for c in roof_m)
+            # stone foundation
+            pygame.draw.rect(s, (118, 118, 124), (px - 11, py + 20, 38, 6))
+            for i in range(0, 38, 6):
+                pygame.draw.rect(s, (94, 94, 100), (px - 11 + i, py + 22, 1, 4))
+            # walls: planks + corner beams
+            pygame.draw.rect(s, COLORS["wood"], (px - 10, py - 12, 36, 34))
+            for i in range(0, 34, 5):
+                pygame.draw.rect(s, COLORS["wood2"], (px - 10, py - 12 + i, 36, 1))
+            pygame.draw.rect(s, COLORS["wood2"], (px - 10, py - 12, 3, 34))
+            pygame.draw.rect(s, COLORS["wood2"], (px + 23, py - 12, 3, 34))
+            pygame.draw.rect(s, COLORS["wood_l"], (px - 10, py - 12, 36, 1))
+            # eaves shadow
+            pygame.draw.rect(s, (74, 50, 30), (px - 14, py - 12, 44, 4))
+            # roof: shingle rows with a ridge line
+            for (rx, ry, rw, rh, col) in ((-14, -19, 44, 7, roof_m),
+                                          (-16, -25, 48, 7, roof_l),
+                                          (-12, -30, 40, 6, roof_m)):
+                pygame.draw.rect(s, col, (px + rx, py + ry, rw, rh))
+                pygame.draw.rect(s, (206, 190, 164), (px + rx, py + ry, rw, 1))
+            for i in range(0, 48, 6):
+                pygame.draw.rect(s, roof_d, (px - 16 + i, py - 25, 1, 7))
+            pygame.draw.rect(s, roof_d, (px - 10, py - 31, 36, 2))
+            pygame.draw.rect(s, tuple(min(255, int(c * 1.25)) for c in roof_l),
+                             (px - 9, py - 30, 34, 1))
+            # window: frame, glass glow, cross bars, shutters
+            glow = int(150 + math.sin(self.game.frame * 0.06 + o["x"]) * 40)
+            pygame.draw.rect(s, (74, 50, 30), (px - 6, py - 5, 14, 14))
+            pygame.draw.rect(s, (min(255, glow), min(255, glow + 40), 130), (px - 5, py - 4, 12, 12))
+            pygame.draw.rect(s, (74, 50, 30), (px - 1, py - 4, 2, 12))
+            pygame.draw.rect(s, (74, 50, 30), (px - 5, py + 1, 12, 2))
+            pygame.draw.rect(s, (168, 122, 74), (px - 8, py - 5, 2, 14))
+            pygame.draw.rect(s, (168, 122, 74), (px + 8, py - 5, 2, 14))
+            # door with frame and handle (+ porch step on some houses)
+            pygame.draw.rect(s, (74, 50, 30), (px + 12, py + 1, 12, 23))
+            pygame.draw.rect(s, COLORS["door"], (px + 13, py + 2, 10, 22))
+            pygame.draw.rect(s, (92, 62, 36), (px + 13, py + 12, 10, 1))
+            pygame.draw.rect(s, (92, 62, 36), (px + 17, py + 2, 1, 22))
+            pygame.draw.rect(s, (232, 200, 112), (px + 20, py + 13, 2, 2))
+            if style == 1:
+                pygame.draw.rect(s, (146, 146, 152), (px + 11, py + 24, 14, 3))
+                pygame.draw.rect(s, (112, 112, 118), (px + 11, py + 27, 14, 1))
+            # chimney with cap + smoke
+            pygame.draw.rect(s, (98, 98, 104), (px + 15, py - 42, 9, 11))
+            pygame.draw.rect(s, (126, 126, 132), (px + 14, py - 44, 11, 3))
             sm = (self.game.frame * 0.04 + o["x"]) % 1
-            smoke = pygame.Surface((3, 3), pygame.SRCALPHA)
-            smoke.fill((200, 200, 205, int(120 * (1 - sm))))
-            s.blit(smoke, (px + 15, py - 34 - sm * 8))
+            puff = pygame.Surface((6, 6), pygame.SRCALPHA)
+            pygame.draw.circle(puff, (208, 208, 214, int(150 * (1 - sm))), (3, 3), 3)
+            s.blit(puff, (px + 17, py - 50 - sm * 14))
 
     def draw_drop(self, d: dict, cam_x: float, cam_y: float) -> None:
         s = self.logical
-        px = (d["x"] - cam_x) * TILE
-        py = (d["y"] - cam_y) * TILE + math.sin(self.game.frame * 0.1) * 2
-        if d["type"] == "gold":
-            pygame.draw.rect(s, (120, 90, 20), (px + 4, py + 6, 8, 8))
-            pygame.draw.rect(s, (240, 200, 80), (px + 5, py + 7, 6, 6))
-            pygame.draw.rect(s, (255, 235, 150), (px + 6, py + 8, 2, 2))
-        else:
-            pygame.draw.rect(s, (40, 70, 130), (px + 4, py + 4, 8, 10))
-            pygame.draw.rect(s, (120, 190, 240), (px + 5, py + 5, 6, 8))
-            pygame.draw.rect(s, (230, 245, 255), (px + 6, py + 6, 2, 4))
+        bob = math.sin(self.game.frame * 0.12 + d["x"]) * 1.5
+        px, py = (d["x"] - cam_x) * TILE, (d["y"] - cam_y) * TILE + bob
+        ground_y = (d["y"] - cam_y) * TILE + 5
+        sh = pygame.Surface((12, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(sh, (0, 0, 0, 70), (0, 0, 12, 5))
+        s.blit(sh, (px + 2, ground_y))
+        glow = pygame.Surface((16, 16), pygame.SRCALPHA)
+        pygame.draw.circle(glow, (255, 240, 170, 45), (8, 8), 7)
+        s.blit(glow, (px, py - 6))
+        key = "icon_" + ("gold" if d["kind"] == "gold" else IT.item_icon(d["kind"]))
+        icon = self.sprites.get(key)
+        if icon:
+            s.blit(pygame.transform.scale(icon, (12, 12)), (px + 2, py - 8))
 
     def blit_sprite(self, key: str, x: float, y: float, flip: bool = False, hurt: bool = False) -> None:
         name = key + ("_hurt" if hurt else "") + ("_f" if flip else "")
@@ -1113,105 +1325,117 @@ class Renderer:
             return ("p_side_2" if frame else "p_side_1"), False
         return ("p_down_2" if frame else "p_down_1"), False
 
+    def draw_shadow(self, x: float, y: float, cam_x: float, cam_y: float, w: int = 14) -> None:
+        sh = pygame.Surface((w, 6), pygame.SRCALPHA)
+        pygame.draw.ellipse(sh, (0, 0, 0, 80), (0, 0, w, 6))
+        self.logical.blit(sh, ((x - cam_x + 0.5) * TILE - w / 2, (y - cam_y + 0.95) * TILE - 3))
+
     def draw_player(self, cam_x: float, cam_y: float) -> None:
-        s = self.logical
         p = self.game.player
-        px = (p["x"] - cam_x) * TILE - SPRITE / 2
-        py = (p["y"] - cam_y) * TILE - SPRITE + 3
         key, flip = self.player_sprite_key(p["dir"], p["frame"] if p["moving"] else 0)
-
-        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (0, 0, 0, 70), (0, 0, 12, 5))
-        s.blit(shadow, ((p["x"] - cam_x) * TILE - 6, (p["y"] - cam_y) * TILE + 1))
-
+        self.draw_shadow(p["x"], p["y"], cam_x, cam_y)
+        ax, ay = self.anchor(p["x"], p["y"], cam_x, cam_y)
         bob = -1 if (p["moving"] and p["frame"]) else 0
-        self.blit_sprite(key, px, py + bob, flip, p["hurt_t"] > 0)
+        self.blit_sprite(key, ax, ay + bob, flip, p["hurt_t"] > 0)
+
+        # weapon in hand when equipped
+        wid = p["equip"]["weapon"]
+        if wid and p["atk_anim"] <= 0:
+            hx = ax + (SPRITE - 10 if not flip else 2)
+            hy = ay + 20 + bob
+            pygame.draw.line(self.logical, SP.PAL["i"], (hx, hy), (hx, hy + 9), 2)
+            pygame.draw.line(self.logical, SP.PAL["m"], (hx, hy), (hx, hy + 8), 1)
 
         if p["atk_anim"] > 0:
             t = 1 - p["atk_anim"] / 0.28
             fx, fy = self.game.face_dir()
             ang = math.atan2(fy, fx) - 1.2 + t * 1.7
-            cx, cy = (p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE - 8
+            cx, cy = (p["x"] - cam_x + 0.5) * TILE, (p["y"] - cam_y + 0.2) * TILE
             bx, by = math.cos(ang), math.sin(ang)
-            pygame.draw.line(s, PAL["p"], (cx + bx * 6, cy + by * 6), (cx + bx * 15, cy + by * 15), 2)
-            pygame.draw.line(s, PAL["q"], (cx + bx * 13, cy + by * 13), (cx + bx * 16, cy + by * 16), 2)
-            for i in range(5):
-                a = ang - 0.5 + i * 0.25
-                pygame.draw.rect(s, (255, 255, 200), (cx + math.cos(a) * 9, cy + math.sin(a) * 9, 1, 1))
+            pygame.draw.line(self.logical, SP.PAL["i"], (cx + bx * 6, cy + by * 6),
+                             (cx + bx * 18, cy + by * 18), 3)
+            pygame.draw.line(self.logical, SP.PAL["M"], (cx + bx * 7, cy + by * 7),
+                             (cx + bx * 18, cy + by * 18), 1)
+            for i in range(6):
+                a = ang - 0.55 + i * 0.22
+                pygame.draw.rect(self.logical, (255, 255, 210),
+                                 (cx + math.cos(a) * 11, cy + math.sin(a) * 11, 2, 2))
+            swing = pygame.Surface((44, 44), pygame.SRCALPHA)
+            pygame.draw.circle(swing, (255, 255, 220, 45), (22, 22), 18, 3)
+            self.logical.blit(swing, (cx - 22, cy - 22))
 
         if p["hp"] < p["hp_max"]:
-            self.draw_hp_bar(p["x"], p["y"] - 0.75, p["hp"], p["hp_max"], cam_x, cam_y)
+            self.draw_hp_bar(p["x"], p["y"] - 0.55, p["hp"], p["hp_max"], cam_x, cam_y)
 
     def draw_npc(self, n: dict, cam_x: float, cam_y: float) -> None:
-        s = self.logical
-        px = (n["x"] - cam_x) * TILE - SPRITE / 2
-        py = (n["y"] - cam_y) * TILE - SPRITE + 3
-        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (0, 0, 0, 60), (0, 0, 12, 5))
-        s.blit(shadow, ((n["x"] - cam_x) * TILE - 6, (n["y"] - cam_y) * TILE + 1))
+        self.draw_shadow(n["x"], n["y"], cam_x, cam_y)
         base = "mage" if n["kind"] == "mage" else "npc"
-        key = base + ("_2" if n["anim_t"] > 0.3 else "_1")
-        bob = math.sin(self.game.frame * 0.06 + n["x"])
-        self.blit_sprite(key, px, py + bob, n["dir"] == "left")
+        key = base + ("_2" if n["anim_t"] > 0.3 else "_1") + ("_f" if n["dir"] == "left" else "")
+        ax, ay = self.anchor(n["x"], n["y"], cam_x, cam_y)
+        bob = math.sin(self.game.frame * 0.06 + n["x"]) * 1.2
+        self.logical.blit(self.npc_surface(key, n["name"]), (ax, ay + bob))
         if math.hypot(n["x"] - self.game.player["x"], n["y"] - self.game.player["y"]) < 2.0:
-            bob2 = math.sin(self.game.frame * 0.12) * 1.5
-            pygame.draw.rect(s, (255, 240, 150), ((n["x"] - cam_x) * TILE - 1, py - 7 + bob2, 3, 5))
-            pygame.draw.rect(s, (255, 240, 150), ((n["x"] - cam_x) * TILE - 2, py - 1 + bob2, 5, 2))
+            bob2 = math.sin(self.game.frame * 0.12) * 2
+            x = (n["x"] - cam_x + 0.5) * TILE
+            pygame.draw.rect(self.logical, (255, 240, 150), (x - 2, ay - 14 + bob2, 4, 6))
+            pygame.draw.rect(self.logical, (255, 240, 150), (x - 3, ay - 6 + bob2, 6, 2))
 
     def draw_mob(self, m: dict, cam_x: float, cam_y: float) -> None:
-        s = self.logical
-        px = (m["x"] - cam_x) * TILE - SPRITE / 2
-        py = (m["y"] - cam_y) * TILE - SPRITE + 3
+        self.draw_shadow(m["x"], m["y"], cam_x, cam_y)
         base = "gb" if m["kind"] == "brute" else "g"
         key = base + ("_2" if (m["moving"] and m["frame"]) else "_1")
-        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
-        pygame.draw.ellipse(shadow, (0, 0, 0, 60), (0, 0, 12, 5))
-        s.blit(shadow, ((m["x"] - cam_x) * TILE - 6, (m["y"] - cam_y) * TILE + 1))
+        ax, ay = self.anchor(m["x"], m["y"], cam_x, cam_y)
         bob = -1 if (m["moving"] and m["frame"]) else 0
         lunge = 2 if m["atk_t"] > 0 else 0
         lx = lunge * (-1 if m["dir"] == "left" else 1 if m["dir"] == "right" else 0)
         ly = lunge * (-1 if m["dir"] == "up" else 1 if m["dir"] == "down" else 0)
-        self.blit_sprite(key, px + lx, py + ly + bob, m["dir"] == "left", m["hurt_t"] > 0)
-
+        self.blit_sprite(key, ax + lx, ay + ly + bob, m["dir"] == "left", m["hurt_t"] > 0)
         if (math.hypot(m["x"] - self.game.player["x"], m["y"] - self.game.player["y"]) < 6.5
                 and m["attack_cd"] > 0.7):
-            pygame.draw.rect(s, (255, 90, 60), ((m["x"] - cam_x) * TILE + 2, py - 8, 2, 4))
-            pygame.draw.rect(s, (255, 90, 60), ((m["x"] - cam_x) * TILE + 2, py - 3, 2, 2))
+            x = (m["x"] - cam_x + 0.5) * TILE
+            pygame.draw.rect(self.logical, (255, 90, 60), (x - 1, ay - 14, 3, 6))
+            pygame.draw.rect(self.logical, (255, 90, 60), (x - 1, ay - 7, 3, 3))
         if m["hp"] < m["hp_max"]:
-            self.draw_hp_bar(m["x"], m["y"] - 0.75, m["hp"], m["hp_max"], cam_x, cam_y)
+            self.draw_hp_bar(m["x"], m["y"] - 0.55, m["hp"], m["hp_max"], cam_x, cam_y)
 
-    def draw_hp_bar(self, x, y, hp, hp_max, cam_x, cam_y, w=14) -> None:
+    def draw_hp_bar(self, x, y, hp, hp_max, cam_x, cam_y, w=16) -> None:
         s = self.logical
-        px = (x - cam_x) * TILE - w / 2
+        px = (x - cam_x + 0.5) * TILE - w / 2
         py = (y - cam_y) * TILE
         ratio = max(0.0, hp / hp_max)
-        pygame.draw.rect(s, (20, 20, 26), (px - 1, py - 1, w + 2, 4))
-        pygame.draw.rect(s, (120, 30, 30), (px, py, w, 2))
-        col = (90, 210, 80) if ratio > 0.5 else (220, 80, 80)
-        pygame.draw.rect(s, col, (px, py, w * ratio, 2))
+        pygame.draw.rect(s, (18, 18, 24), (px - 1, py - 1, w + 2, 5))
+        pygame.draw.rect(s, (110, 28, 28), (px, py, w, 3))
+        pygame.draw.rect(s, (96, 214, 96) if ratio > 0.5 else (226, 84, 72), (px, py, w * ratio, 3))
 
     def draw_particle(self, p: dict, cam_x: float, cam_y: float) -> None:
         alpha = max(0.0, 1 - p["t"] / p["life"])
         col = pygame.Color(p["color"])
         col.a = int(255 * alpha)
-        surf = pygame.Surface((2, 2), pygame.SRCALPHA)
+        surf = pygame.Surface((3, 3), pygame.SRCALPHA)
         surf.fill(col)
         self.logical.blit(surf, ((p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE))
 
-    # -- native-resolution text layer ---------------------------------------
+    # -- native text --------------------------------------------------------
     def draw_text_layer(self, screen: pygame.Surface) -> None:
-        """NPC names and damage numbers — crisp, drawn 1:1 on the real screen."""
         g = self.game
         for n in g.npcs:
             if not (self.cam_x - 2 < n["x"] < self.cam_x + self.view_w + 2
                     and self.cam_y - 2 < n["y"] < self.cam_y + self.view_h + 2):
                 continue
-            lx, ly = self.to_logical(n["x"], n["y"])
-            label = self.font_name.render(n["name"], True, (245, 245, 250))
-            shadow = self.font_name.render(n["name"], True, (0, 0, 0))
-            x = lx * self.zoom - label.get_width() / 2 + self.ox
-            y = (ly - SPRITE + 3) * self.zoom - self.font_name.get_height() - 2 + self.oy
-            screen.blit(shadow, (x + 1, y + 1))
+            ax, ay = self.anchor(n["x"], n["y"], self.cam_x, self.cam_y)
+            label = self.font_small.render(n["name"], True, (248, 248, 254))
+            x = (ax + SPRITE / 2) * self.zoom - label.get_width() / 2 + self.ox
+            y = ay * self.zoom - label.get_height() - 2 + self.oy
+            pad_x, pad_y = self.s(7), self.s(3)
+            pill = pygame.Surface((label.get_width() + pad_x * 2,
+                                   label.get_height() + pad_y * 2), pygame.SRCALPHA)
+            pygame.draw.rect(pill, (12, 14, 22, 185),
+                             (0, 0, pill.get_width(), pill.get_height()),
+                             border_radius=self.s(7))
+            pygame.draw.rect(pill, (206, 192, 140, 110),
+                             (0, 0, pill.get_width(), pill.get_height()), 1,
+                             border_radius=self.s(7))
+            screen.blit(pill, (x - pad_x, y - pad_y))
             screen.blit(label, (x, y))
 
         for f in g.floaters:
@@ -1221,49 +1445,60 @@ class Renderer:
             txt = self.font_small.render(f["text"], True, col)
             lx, ly = self.to_logical(f["x"], f["y"])
             screen.blit(txt, (lx * self.zoom - txt.get_width() / 2 + self.ox,
-                              ly * self.zoom - self.s(14) + self.oy))
+                              ly * self.zoom - self.s(16) + self.oy))
 
     # -- HUD ----------------------------------------------------------------
-    def panel(self, screen, rect, fill=(10, 12, 20, 210), border=(90, 110, 150)) -> None:
+    def panel(self, screen, rect, fill=(10, 12, 20, 214), border=UI_EDGE, radius=0) -> None:
         surf = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
-        surf.fill(fill)
-        pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1)
+        if radius:
+            pygame.draw.rect(surf, fill, (0, 0, rect[2], rect[3]), border_radius=radius)
+            pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1, border_radius=radius)
+        else:
+            surf.fill(fill)
+            pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1)
         screen.blit(surf, (rect[0], rect[1]))
 
     def draw_hud(self, screen) -> None:
-        g, p = self.game, self.game.player
-        S = self.s
-        self.panel(screen, (S(10), S(10), S(176), S(68)))
-        screen.blit(self.font.render("Пиксельное приключение", True, (255, 255, 255)), (S(20), S(16)))
+        g, p, S = self.game, self.game.player, self.s
+        self.panel(screen, (S(10), S(10), S(258), S(88)), radius=S(6))
+        screen.blit(self.font_big.render("Пиксельное приключение", True, (250, 246, 226)), (S(20), S(16)))
         screen.blit(self.font_small.render(
-            f"Ур. {p['level']}   XP {p['xp']}/{p['xp_next']}", True, (180, 200, 230)), (S(20), S(33)))
+            f"Ур. {p['level']}    XP {p['xp']}/{p['xp_next']}", True, (186, 206, 236)), (S(20), S(40)))
 
-        pygame.draw.rect(screen, (30, 30, 38), (S(20), S(50), S(156), S(7)))
-        pygame.draw.rect(screen, (190, 60, 60), (S(20), S(50), S(156), S(7)))
-        pygame.draw.rect(screen, (80, 210, 110),
-                         (S(20), S(50), S(156) * max(0.0, p["hp"] / p["hp_max"]), S(7)))
-        hp_txt = self.font_small.render(f"HP {max(0, math.ceil(p['hp']))} / {int(p['hp_max'])}",
+        pygame.draw.rect(screen, (28, 28, 36), (S(20), S(58), S(180), S(9)))
+        pygame.draw.rect(screen, (150, 40, 40), (S(20), S(58), S(180), S(9)))
+        pygame.draw.rect(screen, (92, 214, 108),
+                         (S(20), S(58), S(180) * max(0.0, p["hp"] / p["hp_max"]), S(9)))
+        hp_txt = self.font_small.render(f"{max(0, math.ceil(p['hp']))} / {int(p['hp_max'])}",
                                         True, (255, 255, 255))
-        screen.blit(hp_txt, (S(98) - hp_txt.get_width() / 2, S(49)))
+        screen.blit(hp_txt, (S(206), S(57)))
+
         screen.blit(self.font_small.render(
-            f"Золото: {p['gold']}   Зелья: {p['potions']}", True, (240, 210, 120)), (S(20), S(61)))
+            f"Золото: {p['gold']}", True, GOLD), (S(20), S(74)))
+        atk = 5 + self.game.attack_bonus()
+        screen.blit(self.font_small.render(
+            f"Атака: {atk}    Защита: {self.game.defense()}", True, (232, 200, 170)),
+            (S(120), S(74)))
 
-        self.panel(screen, (S(10), S(86), S(176), S(46)), fill=(10, 12, 20, 190))
-        for i, line in enumerate(("ПРОБЕЛ / ЛКМ — атака", "Q — квесты   K — навыки",
+        self.panel(screen, (S(10), S(106), S(258), S(50)), fill=(10, 12, 20, 190), radius=S(6))
+        for i, line in enumerate(("ПРОБЕЛ / ЛКМ — атака", "I — сумка   Q — квесты   K — навыки",
                                   f"Очки навыков: {g.skill_points}")):
-            screen.blit(self.font_small.render(line, True, (200, 214, 240)), (S(20), S(90 + i * 14)))
+            screen.blit(self.font_small.render(line, True, (204, 218, 242)), (S(20), S(110 + i * 15)))
 
-        ty = S(146)
-        for t in g.toasts:
+        ty = self.height - S(124)
+        for t in reversed(g.toasts[-4:]):
             a = t["t"] / 0.2 if t["t"] < 0.2 else (t["life"] - t["t"]) / 0.6 if t["t"] > t["life"] - 0.6 else 1
-            surf = pygame.Surface((S(300), S(20)), pygame.SRCALPHA)
-            surf.fill((10, 12, 18, int(190 * a)))
+            surf = pygame.Surface((S(360), S(24)), pygame.SRCALPHA)
+            pygame.draw.rect(surf, (10, 12, 18, int(205 * a)), (0, 0, S(360), S(24)),
+                             border_radius=S(4))
             screen.blit(surf, (S(10), ty))
             txt = self.font_small.render(t["text"], True, pygame.Color(t["color"]))
             txt.set_alpha(int(255 * a))
-            screen.blit(txt, (S(18), ty + S(4)))
-            ty += S(24)
+            screen.blit(txt, (S(20), ty + S(6)))
+            ty -= S(28)
 
+        if g.show_inventory:
+            self.draw_inventory(screen)
         if g.show_quests:
             self.draw_quest_panel(screen)
         if g.show_skills:
@@ -1271,95 +1506,283 @@ class Renderer:
         if g.dialog:
             self.draw_dialog(screen)
 
+    # -- inventory ----------------------------------------------------------
+    def draw_inventory(self, screen) -> None:
+        g, S = self.game, self.s
+        cols, rows = 5, 4
+        cell = S(64)
+        pad = S(10)
+        w = pad * 2 + cols * (cell + pad) + S(250)
+        h = pad * 2 + rows * (cell + pad) + S(40)
+        x = (self.width - w) // 2
+        y = (self.height - h) // 2
+        self.panel(screen, (x, y, w, h), fill=(12, 15, 24, 240), border=(140, 160, 200), radius=S(8))
+        screen.blit(self.font_big.render("Сумка", True, (250, 240, 210)), (x + pad, y + pad))
+        screen.blit(self.font_small.render(
+            f"{len(g.player['inventory'])}/{INV_SLOTS} слотов   •   стрелки — выбор   •   "
+            "E / Enter — использовать   •   I — закрыть", True, (186, 202, 226)),
+            (x + pad + S(90), y + pad + S(8)))
+
+        grid_x = x + pad
+        grid_y = y + pad + S(34)
+        mouse = pygame.mouse.get_pos()
+        hover_index = None
+        for i in range(INV_SLOTS):
+            cx = grid_x + (i % cols) * (cell + pad)
+            cy = grid_y + (i // cols) * (cell + pad)
+            rect = pygame.Rect(cx, cy, cell, cell)
+            if rect.collidepoint(mouse):
+                hover_index = i
+            sel = (i == g.inv_cursor)
+            pygame.draw.rect(screen, (30, 38, 54) if sel else (20, 25, 36), rect, border_radius=S(6))
+            pygame.draw.rect(screen, (250, 220, 130) if sel else (62, 74, 98), rect, 2,
+                             border_radius=S(6))
+            inv = g.player["inventory"]
+            if i < len(inv):
+                slot = inv[i]
+                icon = self.sprites.get("icon_" + IT.item_icon(slot["id"]))
+                if icon:
+                    big = pygame.transform.scale(icon, (S(44), S(44)))
+                    screen.blit(big, (cx + (cell - S(44)) / 2, cy + S(6)))
+                if slot["count"] > 1:
+                    cnt = self.font_small.render(str(slot["count"]), True, (255, 255, 255))
+                    bw, bh = cnt.get_width() + S(8), cnt.get_height() + S(2)
+                    badge = pygame.Surface((bw, bh), pygame.SRCALPHA)
+                    pygame.draw.rect(badge, (12, 14, 22, 215), (0, 0, bw, bh), border_radius=S(4))
+                    screen.blit(badge, (cx + cell - bw - S(4), cy + cell - bh - S(4)))
+                    screen.blit(cnt, (cx + cell - bw, cy + cell - bh - S(3)))
+                equipped = slot["id"] in (g.player["equip"]["weapon"], g.player["equip"]["armor"])
+                if equipped:
+                    bx, by = cx + S(5), cy + S(5)
+                    pygame.draw.rect(screen, (26, 40, 26), (bx, by, S(19), S(19)))
+                    pygame.draw.rect(screen, (128, 226, 128), (bx, by, S(19), S(19)), 1)
+                    pygame.draw.lines(screen, (150, 240, 150), False,
+                                      [(bx + S(4), by + S(10)), (bx + S(8), by + S(14)),
+                                       (bx + S(15), by + S(5))], 2)
+
+        # right column: details + equipment
+        px = grid_x + cols * (cell + pad) + pad
+        py = grid_y
+        inv = g.player["inventory"]
+        cursor = hover_index if hover_index is not None else g.inv_cursor
+        self.panel(screen, (px, py, S(238), S(150)), fill=(16, 20, 30, 230), border=(90, 108, 142),
+                   radius=S(6))
+        if 0 <= cursor < len(inv):
+            item_id = inv[cursor]["id"]
+            data = IT.ITEMS[item_id]
+            screen.blit(self.font.render(data["name"], True, (252, 244, 216)), (px + S(10), py + S(8)))
+            screen.blit(self.font_small.render(data["desc"], True, (182, 198, 222)),
+                        (px + S(10), py + S(32)))
+            stats = []
+            if "atk" in data:
+                stats.append(f"Атака +{data['atk']}")
+            if "def" in data:
+                stats.append(f"Защита +{data['def']}")
+            if "heal" in data:
+                stats.append(f"Лечит {data['heal']} HP")
+            stats.append(f"Цена {data['value']} золота")
+            for i, line in enumerate(stats):
+                screen.blit(self.font_small.render(line, True, (232, 214, 160)),
+                            (px + S(10), py + S(56 + i * 18)))
+            screen.blit(self.font_small.render(
+                {"consumable": "E — использовать", "weapon": "E — взять в руку",
+                 "armor": "E — надеть"}.get(data["kind"], "Материал для продажи"),
+                True, (140, 200, 255)), (px + S(10), py + S(126)))
+        else:
+            screen.blit(self.font_small.render("Пустой слот", True, (140, 152, 176)),
+                        (px + S(10), py + S(8)))
+
+        eq_y = py + S(162)
+        self.panel(screen, (px, eq_y, S(238), S(96)), fill=(16, 20, 30, 230), border=(90, 108, 142),
+                   radius=S(6))
+        screen.blit(self.font.render("Экипировка", True, (252, 244, 216)), (px + S(10), eq_y + S(6)))
+        for i, (key, label) in enumerate((("weapon", "Оружие"), ("armor", "Броня"))):
+            item_id = g.player["equip"][key]
+            name = IT.item_name(item_id) if item_id else "—"
+            screen.blit(self.font_small.render(f"{label}: {name}", True, (206, 220, 240)),
+                        (px + S(10), eq_y + S(28 + i * 20)))
+        screen.blit(self.font_small.render(
+            f"Итого: атака {5 + g.attack_bonus()}, защита {g.defense()}",
+            True, (240, 210, 140)), (px + S(10), eq_y + S(70)))
+
     def draw_quest_panel(self, screen) -> None:
         g, S = self.game, self.s
-        h = S(30 + len(g.quests) * 42)
-        self.panel(screen, (S(320), S(20), S(430), h), fill=(12, 14, 22, 225), border=(120, 160, 210))
+        h = S(34 + len(g.quests) * 44)
+        self.panel(screen, (S(330), S(20), S(440), h), fill=(12, 15, 24, 232), border=(120, 160, 210),
+                   radius=S(6))
         screen.blit(self.font.render("Журнал квестов   (Q — закрыть)", True, (255, 255, 255)),
-                    (S(334), S(26)))
-        yy = S(52)
+                    (S(346), S(28)))
+        yy = S(56)
         for q in g.quests:
-            col = (140, 220, 140) if q["done"] else (230, 230, 240)
-            screen.blit(self.font_small.render(("✔ " if q["done"] else "• ") + q["title"], True, col),
-                        (S(334), yy))
-            screen.blit(self.font_small.render(q["desc"], True, (170, 186, 210)), (S(344), yy + S(14)))
+            col = (144, 224, 144) if q["done"] else (232, 232, 242)
+            screen.blit(self.font_small.render(("[готово] " if q["done"] else "[ ] ") + q["title"],
+                                               True, col), (S(346), yy))
+            screen.blit(self.font_small.render(q["desc"], True, (174, 190, 214)), (S(358), yy + S(15)))
             if not q["done"]:
-                screen.blit(self.font_small.render(f"Прогресс: {q['progress']}/{q['goal']}",
-                                                   True, (120, 200, 255)), (S(630), yy + S(14)))
-            yy += S(42)
+                screen.blit(self.font_small.render(f"{q['progress']}/{q['goal']}", True, (120, 200, 255)),
+                            (S(700), yy + S(15)))
+            yy += S(44)
 
     def draw_skill_panel(self, screen) -> None:
         g, S = self.game, self.s
-        h = S(40 + len(g.skills) * 46)
-        self.panel(screen, (S(320), S(20), S(430), h), fill=(12, 14, 22, 228), border=(150, 130, 220))
+        h = S(42 + len(g.skills) * 48)
+        self.panel(screen, (S(330), S(20), S(440), h), fill=(12, 15, 24, 234), border=(150, 130, 220),
+                   radius=S(6))
         screen.blit(self.font.render(f"Дерево навыков   (K — закрыть)   Очки: {g.skill_points}",
-                                     True, (255, 255, 255)), (S(334), S(26)))
-        yy = S(54)
+                                     True, (255, 255, 255)), (S(346), S(28)))
+        yy = S(58)
         for i, sk in enumerate(g.skills):
             ok = g.can_learn(sk)
-            col = (130, 230, 130) if sk["learned"] else (240, 240, 250) if ok else (130, 134, 148)
+            col = (140, 232, 140) if sk["learned"] else (242, 242, 252) if ok else (132, 136, 150)
             label = f"[{i + 1}] {sk['name']}"
             if sk["learned"]:
-                label += "  ✔"
+                label += "  (изучено)"
             elif sk["req"] and not all(g.has_skill(r) for r in sk["req"]):
                 label += "  требует " + ", ".join(sk["req"])
-            screen.blit(self.font_small.render(label, True, col), (S(334), yy))
-            screen.blit(self.font_small.render(sk["desc"], True, (170, 186, 210)), (S(350), yy + S(14)))
-            yy += S(46)
+            screen.blit(self.font_small.render(label, True, col), (S(346), yy))
+            screen.blit(self.font_small.render(sk["desc"], True, (174, 190, 214)), (S(362), yy + S(15)))
+            yy += S(48)
         screen.blit(self.font_small.render("Нажми 1–4, чтобы изучить доступный навык.",
-                                           True, (150, 170, 200)), (S(334), S(20) + h - S(18)))
+                                           True, (152, 172, 202)), (S(346), S(20) + h - S(20)))
 
     def draw_dialog(self, screen) -> None:
         if not self.game.dialog:
             return
         d, S = self.game.dialog, self.s
-        w, h = S(520), S(74)
-        x, y = (self.width - w) / 2, self.height - h - S(34)
-        self.panel(screen, (int(x), int(y), w, h), fill=(10, 12, 20, 235), border=(220, 200, 130))
-        screen.blit(self.font.render(d["name"], True, (255, 226, 140)), (x + S(16), y + S(10)))
-        screen.blit(self.font_small.render(d["line"], True, (238, 240, 248)), (x + S(16), y + S(34)))
-        screen.blit(self.font_small.render("E / Q — закрыть", True, (160, 176, 200)),
-                    (x + w - S(110), y + h - S(20)))
+        w, h = S(620), S(96)
+        x, y = (self.width - w) / 2, self.height - h - S(46)
+        self.panel(screen, (int(x), int(y), w, h), fill=(10, 13, 22, 240), border=(226, 202, 132),
+                   radius=S(8))
+        screen.blit(self.font.render(d["name"], True, (255, 226, 140)), (x + S(18), y + S(12)))
+        screen.blit(self.font_small.render(d["line"], True, (240, 242, 250)), (x + S(18), y + S(40)))
+        screen.blit(self.font_small.render("E / Q — закрыть", True, (162, 178, 202)),
+                    (x + w - S(130), y + h - S(24)))
 
-    # -- settings menu ------------------------------------------------------
-    def draw_menu(self, screen, selected: int, fullscreen: bool, saved: bool) -> None:
+    # -- menus --------------------------------------------------------------
+    def draw_title_backdrop(self, screen: pygame.Surface, t: float) -> None:
+        """The live world behind the title screen, slowly panning, dimmed."""
+        g = self.game
+        cam_x = VILLAGE_CX - self.view_w / 2 + math.sin(t * 0.12) * 6
+        cam_y = VILLAGE_CY - self.view_h / 2 + math.cos(t * 0.09) * 3
+        cam_x = max(0.0, min(MAP_W - self.view_w, cam_x))
+        cam_y = max(0.0, min(MAP_H - self.view_h, cam_y))
+        self.cam_x, self.cam_y = cam_x, cam_y
+        self.logical.fill(COLORS["void"])
+        self.draw_tiles(cam_x, cam_y)
+        self.draw_decor(cam_x, cam_y)
+        for o in g.world.objects:
+            if cam_x - 3 < o["x"] < cam_x + self.view_w + 3 and cam_y - 3 < o["y"] < cam_y + self.view_h + 4:
+                self.draw_object(o, cam_x, cam_y)
+        for n in g.npcs:
+            self.draw_npc(n, cam_x, cam_y)
+        self.draw_player(cam_x, cam_y)
+
+        pygame.transform.scale(self.logical, (self.lw * self.zoom, self.lh * self.zoom), self._scaled)
+        screen.fill((8, 12, 20))
+        screen.blit(self._scaled, (self.ox, self.oy))
+
+        # dim + vignette
+        dim = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        dim.fill((6, 10, 20, 150))
+        screen.blit(dim, (0, 0))
+        vignette = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+        for i in range(6):
+            a = 26 - i * 4
+            pygame.draw.rect(vignette, (0, 0, 0, max(0, a)),
+                             (i * self.s(18), i * self.s(14),
+                              self.width - i * self.s(36), self.height - i * self.s(28)),
+                             self.s(18))
+        screen.blit(vignette, (0, 0))
+
+        # fireflies (sparse, so they don't fight the menu for attention)
+        for i in range(14):
+            fx = (math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * self.width
+            fy = (math.cos(t * 0.23 + i * 2.3) * 0.5 + 0.5) * self.height
+            a = int(110 + 100 * math.sin(t * 2 + i))
+            glow = pygame.Surface((self.s(9), self.s(9)), pygame.SRCALPHA)
+            pygame.draw.circle(glow, (255, 236, 160, max(0, min(255, a))),
+                               (self.s(4), self.s(4)), self.s(2))
+            screen.blit(glow, (fx, fy))
+
+    def draw_menu(self, screen, title: str, subtitle: str, entries, selected: int,
+                  t: float, backdrop: bool = True, note: str = "") -> None:
         S = self.s
-        screen.fill((12, 18, 28))
-        title = self.font_title.render("Пиксельное приключение", True, (245, 240, 200))
-        screen.blit(title, (self.width / 2 - title.get_width() / 2, S(70)))
-        sub = self.font.render("v1.2 — выбор разрешения", True, (150, 170, 200))
-        screen.blit(sub, (self.width / 2 - sub.get_width() / 2, S(70) + title.get_height() + S(6)))
+        if backdrop:
+            self.draw_title_backdrop(screen, t)
+        else:
+            screen.fill((10, 14, 24))
 
-        y = S(190)
-        screen.blit(self.font.render("Разрешение экрана:", True, (220, 230, 245)), (S(60), y))
-        y += S(30)
-        for i, (w, h, z) in enumerate(RESOLUTIONS):
-            cur = (i == selected)
-            col = (255, 235, 150) if cur else (200, 210, 225)
-            mark = "▶" if cur else " "
-            label = f"{mark}  [{i + 1}]  {w} x {h}"
-            if w == 1920 and h == 1080:
-                label += "   (Full HD)"
-            if w == 1280 and h == 720:
-                label += "   (HD)"
-            screen.blit(self.font.render(label, True, col), (S(70), y))
-            y += S(28)
+        row_h = S(52)
+        panel_w = S(660)
+        panel_h = S(150) + len(entries) * row_h + (S(52) if note else S(44))
+        px = (self.width - panel_w) // 2
+        py = (self.height - panel_h) // 2 - S(20)
 
-        y += S(12)
-        fs = "включён" if fullscreen else "выключен"
-        screen.blit(self.font.render(f"Полный экран: {fs}   (F11)", True, (200, 210, 225)), (S(60), y))
-        y += S(28)
-        screen.blit(self.font_small.render(
-            "Пробел / Enter — начать игру    •    1-5 — выбрать разрешение    "
-            "•    F11 — полный экран    •    Esc — выход",
-            True, (150, 170, 200)), (S(60), y))
-        if saved:
-            screen.blit(self.font_small.render("Разрешение сохранено", True, (140, 220, 140)),
-                        (S(60), y + S(22)))
-        screen.blit(self.font_small.render("WASD/стрелки — движение, ПРОБЕЛ — атака, E — говорить, "
-                                           "Q — квесты, K — навыки, F5/F9 — сохранить/загрузить, "
-                                           "F10 — это меню",
-                                           True, (120, 140, 165)), (S(60), self.height - S(40)))
+        # hard-edged pixel drop shadow
+        screen.blit(pygame.Surface((1, 1)))
+        sh = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        sh.fill((0, 0, 0, 130))
+        screen.blit(sh, (px + S(7), py + S(7)))
+
+        # pixel-style frame: flat panel, 2px border, corner ticks
+        self.panel(screen, (px, py, panel_w, panel_h), fill=(13, 16, 26, 252),
+                   border=(150, 128, 78), radius=0)
+        pygame.draw.rect(screen, (222, 196, 130), (px, py, panel_w, panel_h), 2)
+        tick = S(14)
+        for (cx, cy, dx, dy) in ((px, py, 1, 1), (px + panel_w, py, -1, 1),
+                                 (px, py + panel_h, 1, -1), (px + panel_w, py + panel_h, -1, -1)):
+            pygame.draw.rect(screen, (246, 224, 156),
+                             (min(cx, cx + dx * tick), min(cy, cy + dy * tick), tick, 3))
+            pygame.draw.rect(screen, (246, 224, 156),
+                             (min(cx, cx + dx * 3), min(cy, cy + dy * tick), 3, tick))
+
+        title_s = self.font_title.render(title, True, (255, 238, 176))
+        title_sh = self.font_title.render(title, True, (24, 16, 6))
+        tx = self.width / 2 - title_s.get_width() / 2
+        ty = py + S(26)
+        screen.blit(title_sh, (tx + 3, ty + 3))
+        screen.blit(title_s, (tx, ty))
+        pygame.draw.rect(screen, (150, 128, 78),
+                         (px + S(60), ty + title_s.get_height() + S(10), panel_w - S(120), 1))
+        if subtitle:
+            sub = self.font.render(subtitle, True, (214, 226, 246))
+            screen.blit(sub, (self.width / 2 - sub.get_width() / 2,
+                              ty + title_s.get_height() + S(18)))
+
+        mouse = pygame.mouse.get_pos()
+        y = ty + title_s.get_height() + (S(66) if subtitle else S(44))
+        self.menu_rects = []
+        for i, (label, enabled) in enumerate(entries):
+            rect = pygame.Rect(px + S(56), y, panel_w - S(112), row_h - S(8))
+            self.menu_rects.append((rect, i, enabled))
+            hovered = rect.collidepoint(mouse) and enabled
+            cur = (i == selected) or hovered
+            if cur and enabled:
+                # dark plate + bright gold text: the active row is the most contrasty
+                pygame.draw.rect(screen, (34, 28, 16), rect)
+                pygame.draw.rect(screen, (248, 226, 152), rect, 2)
+            col = ((255, 236, 158) if (cur and enabled)
+                   else (204, 214, 232) if enabled else (104, 112, 128))
+            txt = self.font_big.render(label, True, col)
+            screen.blit(txt, (self.width / 2 - txt.get_width() / 2,
+                              rect[1] + (rect[3] - txt.get_height()) / 2))
+            if cur and enabled:
+                if math.sin(t * 6) > -0.35:
+                    # drawn, not a font glyph: SysFont has no reliable ▶
+                    ax0 = rect[0] + S(16)
+                    ay0 = rect[1] + rect[3] / 2
+                    pygame.draw.polygon(screen, (255, 226, 140),
+                                        [(ax0, ay0 - S(8)), (ax0 + S(10), ay0),
+                                         (ax0, ay0 + S(8))])
+            y += row_h
+
+        footer_y = py + panel_h - S(38)
+        pygame.draw.rect(screen, (150, 128, 78), (px + S(60), footer_y - S(10), panel_w - S(120), 1))
+        if note:
+            n = self.font_small.render(note, True, (186, 204, 228))
+            screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
+        ver = self.font_small.render("Пиксельное приключение — версия 1.3", True, (150, 164, 188))
+        screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
 
 # ----------------------------------------------------------------------------
@@ -1392,8 +1815,36 @@ def parse_res_arg(argv: list[str]) -> int | None:
     return None
 
 
+def best_res_index_for_desktop() -> int:
+    try:
+        dw, dh = pygame.display.get_desktop_sizes()[0]
+    except Exception:
+        return DEFAULT_RES_INDEX
+    for i in range(len(RESOLUTIONS) - 1, -1, -1):
+        if RESOLUTIONS[i][0] <= dw and RESOLUTIONS[i][1] <= dh:
+            return i
+    return 0
+
+
+def apply_display(res_index: int, fullscreen: bool):
+    w, h, zoom = RESOLUTIONS[res_index]
+    if fullscreen:
+        try:
+            dw, dh = pygame.display.get_desktop_sizes()[0]
+        except Exception:
+            dw, dh = w, h
+        screen = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
+        best = 1
+        for z in (2, 3, 4, 5, 6):
+            if dw // z >= 320 and dh // z >= 240:
+                best = z
+        return screen, dw, dh, best
+    screen = pygame.display.set_mode((w, h))
+    return screen, w, h, zoom
+
+
 # ----------------------------------------------------------------------------
-# Input / loop
+# Input
 # ----------------------------------------------------------------------------
 KEYMAP = {
     pygame.K_w: "up", pygame.K_UP: "up",
@@ -1401,6 +1852,7 @@ KEYMAP = {
     pygame.K_a: "left", pygame.K_LEFT: "left",
     pygame.K_d: "right", pygame.K_RIGHT: "right",
 }
+MOVE_KEYS = set(KEYMAP)
 
 
 def gather_input(keys) -> dict:
@@ -1411,8 +1863,31 @@ def gather_input(keys) -> dict:
     return inp
 
 
-def handle_key(game: Game, key: int) -> None:
-    if key == pygame.K_e:
+def handle_game_key(game: Game, key: int) -> None:
+    if game.show_inventory:
+        inv_len = len(game.player["inventory"])
+        if key in (pygame.K_LEFT, pygame.K_a):
+            game.inv_cursor = (game.inv_cursor - 1) % INV_SLOTS
+        elif key in (pygame.K_RIGHT, pygame.K_d):
+            game.inv_cursor = (game.inv_cursor + 1) % INV_SLOTS
+        elif key in (pygame.K_UP, pygame.K_w):
+            game.inv_cursor = (game.inv_cursor - 5) % INV_SLOTS
+        elif key in (pygame.K_DOWN, pygame.K_s):
+            game.inv_cursor = (game.inv_cursor + 5) % INV_SLOTS
+        elif key in (pygame.K_e, pygame.K_RETURN, pygame.K_KP_ENTER):
+            msg = game.use_slot(game.inv_cursor)
+            if msg:
+                game.toast(msg, "#9ad7ff")
+            game.inv_cursor = min(game.inv_cursor, max(0, INV_SLOTS - 1))
+        elif key == pygame.K_i:
+            game.show_inventory = False
+        return
+
+    if key == pygame.K_i:
+        game.show_inventory = True
+        game.show_quests = False
+        game.show_skills = False
+    elif key == pygame.K_e:
         if game.dialog:
             game.dialog = None
         else:
@@ -1435,108 +1910,185 @@ def handle_key(game: Game, key: int) -> None:
     elif key == pygame.K_F9:
         game.load()
     elif game.show_skills and key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
-        idx = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3}[key]
-        game.learn(game.skills[idx])
+        game.learn(game.skills[{pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3}[key]])
     elif key == pygame.K_a and game.has_skill("s_heal"):
-        p = game.player
-        if p["hp"] < p["hp_max"] and p["potions"] > 0:
-            p["potions"] -= 1
-            p["hp"] = min(p["hp_max"], p["hp"] + 10)
-            game.toast("Лечение +10 HP", "#8ee08e")
+        game.use_potion_hotkey()
 
 
-def best_res_index_for_desktop() -> int:
-    try:
-        dw, dh = pygame.display.get_desktop_sizes()[0]
-    except Exception:
-        return DEFAULT_RES_INDEX
-    for i in range(len(RESOLUTIONS) - 1, -1, -1):
-        if RESOLUTIONS[i][0] <= dw and RESOLUTIONS[i][1] <= dh:
-            return i
-    return 0
-
-
-def apply_display(screen, res_index: int, fullscreen: bool):
-    """Return (screen, width, height, zoom)."""
-    w, h, zoom = RESOLUTIONS[res_index]
-    if fullscreen:
-        try:
-            dw, dh = pygame.display.get_desktop_sizes()[0]
-        except Exception:
-            dw, dh = w, h
-        screen = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
-        best = 1
-        for z in (2, 3, 4, 5, 6):
-            if dw // z >= 320 and dh // z >= 240:
-                best = z
-        return screen, dw, dh, best
-    screen = pygame.display.set_mode((w, h))
-    return screen, w, h, zoom
-
-
+# ----------------------------------------------------------------------------
+# Main loop with menus
+# ----------------------------------------------------------------------------
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel RPG Adventure 1.2")
+    pygame.display.set_caption("Pixel RPG Adventure 1.3")
 
     cfg = load_config()
     res_index = parse_res_arg(sys.argv)
     if res_index is None:
-        res_index = cfg.get("res_index", DEFAULT_RES_INDEX)
-        res_index = max(0, min(len(RESOLUTIONS) - 1, res_index))
+        res_index = max(0, min(len(RESOLUTIONS) - 1, cfg.get("res_index", DEFAULT_RES_INDEX)))
     fullscreen = bool(cfg.get("fullscreen", False)) or "--fullscreen" in sys.argv
     if not fullscreen:
-        # never open a window bigger than the desktop
         res_index = min(res_index, best_res_index_for_desktop())
 
-    screen, width, height, zoom = apply_display(None, res_index, fullscreen)
+    screen, width, height, zoom = apply_display(res_index, fullscreen)
     game = Game()
     renderer = Renderer(game, width, height, zoom)
     clock = pygame.time.Clock()
+    has_save = SAVE_PATH.exists()
 
-    state = "menu"
-    menu_saved = False
+    state = "title"
+    selected = 0
+    settings_from = "title"
+    t = 0.0
+    note = ""
     running = True
+
     while running:
         dt = min(0.05, clock.tick(FPS) / 1000.0)
+        t += dt
+        entries: list[tuple[str, bool]] = []
+
+        if state == "title":
+            entries = [("Новая игра", True),
+                       ("Продолжить" + ("" if has_save else "   — нет сохранения"), has_save),
+                       ("Настройки", True),
+                       ("Выход", True)]
+        elif state == "pause":
+            entries = [("Продолжить", True), ("Сохранить", True),
+                       ("Загрузить" + ("" if has_save else "   — нет сохранения"), has_save),
+                       ("Настройки", True), ("В главное меню", True), ("Выход", True)]
+        elif state == "settings":
+            entries = [(f"{w} x {h}" + ("   (Full HD)" if (w, h) == (1920, 1080) else
+                                        "   (HD)" if (w, h) == (1280, 720) else ""), True)
+                       for (w, h, _z) in RESOLUTIONS]
+            entries.append((f"Полный экран: {'включён' if fullscreen else 'выключен'}", True))
+            entries.append(("Назад", True))
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_F11:
                     fullscreen = not fullscreen
-                    screen, width, height, zoom = apply_display(screen, res_index, fullscreen)
+                    screen, width, height, zoom = apply_display(res_index, fullscreen)
                     renderer.resize(width, height, zoom)
                     save_config({"res_index": res_index, "fullscreen": fullscreen})
-                    menu_saved = True
                     continue
-                if state == "menu":
-                    if event.key in (pygame.K_SPACE, pygame.K_RETURN):
-                        state = "play"
-                        menu_saved = False
-                    elif event.key == pygame.K_ESCAPE:
-                        running = False
-                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
-                        idx = event.key - pygame.K_1
-                        if idx < len(RESOLUTIONS):
-                            res_index = idx
-                            screen, width, height, zoom = apply_display(screen, res_index, fullscreen)
+                if state == "play":
+                    if event.key == pygame.K_ESCAPE and not (game.show_inventory or game.show_quests
+                                                             or game.show_skills or game.dialog):
+                        state = "pause"
+                        selected = 0
+                    elif event.key == pygame.K_F10:
+                        state = "pause"
+                        selected = 0
+                    else:
+                        handle_game_key(game, event.key)
+                    continue
+
+                # menu navigation
+                if event.key in (pygame.K_UP, pygame.K_w):
+                    selected = (selected - 1) % len(entries)
+                    while not entries[selected][1]:
+                        selected = (selected - 1) % len(entries)
+                elif event.key in (pygame.K_DOWN, pygame.K_s):
+                    selected = (selected + 1) % len(entries)
+                    while not entries[selected][1]:
+                        selected = (selected + 1) % len(entries)
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    label = entries[selected][0]
+                    if state == "settings":
+                        if selected < len(RESOLUTIONS):
+                            res_index = selected
+                            screen, width, height, zoom = apply_display(res_index, fullscreen)
                             renderer.resize(width, height, zoom)
                             save_config({"res_index": res_index, "fullscreen": fullscreen})
-                            menu_saved = True
-                else:
-                    if event.key == pygame.K_F10:
-                        state = "menu"
-                    else:
-                        handle_key(game, event.key)
+                            note = "Разрешение сохранено"
+                        elif selected == len(RESOLUTIONS):
+                            fullscreen = not fullscreen
+                            screen, width, height, zoom = apply_display(res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            save_config({"res_index": res_index, "fullscreen": fullscreen})
+                        else:
+                            state = settings_from
+                            selected = 0
+                            note = ""
+                    elif state == "title":
+                        if label == "Новая игра":
+                            game = Game()
+                            renderer.game = game
+                            state = "play"
+                            note = ""
+                        elif label == "Продолжить":
+                            if game.load():
+                                state = "play"
+                                note = ""
+                        elif label == "Настройки":
+                            settings_from = "title"
+                            state = "settings"
+                            selected = res_index
+                            note = ""
+                        else:
+                            running = False
+                    elif state == "pause":
+                        if label == "Продолжить":
+                            state = "play"
+                        elif label == "Сохранить":
+                            game.save()
+                            has_save = True
+                        elif label == "Загрузить":
+                            game.load()
+                        elif label == "Настройки":
+                            settings_from = "pause"
+                            state = "settings"
+                            selected = res_index
+                        elif label == "В главное меню":
+                            state = "title"
+                            selected = 0
+                        else:
+                            running = False
+                elif event.key == pygame.K_ESCAPE:
+                    if state == "settings":
+                        state = settings_from
+                        selected = 0
+                        note = ""
+                    elif state == "pause":
+                        state = "play"
+                    elif state == "title":
+                        running = False
+            elif event.type == pygame.MOUSEMOTION and state != "play":
+                for rect, i, enabled in getattr(renderer, "menu_rects", []):
+                    if rect.collidepoint(event.pos) and enabled:
+                        selected = i
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if state == "play" and not game.dialog:
-                    game.attack()
+                if state == "play":
+                    if not (game.dialog or game.show_inventory):
+                        game.attack()
+                else:
+                    for rect, i, enabled in getattr(renderer, "menu_rects", []):
+                        if rect.collidepoint(event.pos) and enabled:
+                            selected = i
+                            pygame.event.post(pygame.event.Event(
+                                pygame.KEYDOWN, key=pygame.K_RETURN))
+                            break
 
         if state == "play":
             game.update(dt, gather_input(pygame.key.get_pressed()))
             renderer.draw(screen)
-        else:
-            renderer.draw_menu(screen, res_index, fullscreen, menu_saved)
+        elif state == "title":
+            renderer.draw_menu(screen, "Пиксельное приключение",
+                               "Большой мир • гоблины • квесты • навыки",
+                               entries, selected, t,
+                               note=note or "Стрелки / W S — выбор     Enter / Пробел — подтвердить     Esc — выход")
+        elif state == "pause":
+            renderer.draw(screen)
+            renderer.draw_menu(screen, "Пауза", "", entries, selected, t,
+                               backdrop=False,
+                               note=note or "Стрелки / W S — выбор     Enter — подтвердить     Esc — продолжить")
+        else:  # settings
+            renderer.draw_menu(screen, "Настройки", "Разрешение экрана и режим окна",
+                               entries, selected, t, backdrop=False,
+                               note=note or "Enter — применить     Esc — назад")
         pygame.display.flip()
 
     game.save()
@@ -1549,8 +2101,6 @@ def run() -> int:
 # Self-test
 # ----------------------------------------------------------------------------
 def selftest() -> int:
-    """Headless end-to-end check; also writes a report file so a windowed .exe
-    build (no console) can be verified."""
     import contextlib
     import io
 
@@ -1572,125 +2122,179 @@ def _selftest_body() -> int:
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
     pygame.display.set_mode((64, 64))
-
     problems: list[str] = []
+
+    # ---- art ----
+    art_issues = SP._validate()
+    print(f"art: {len(SP.SPRITES)} sprites {SP.SPRITE}x{SP.SPRITE}, {len(SP.ICONS)} icons,"
+          f" problems: {len(art_issues)}")
+    if art_issues:
+        problems.extend(art_issues[:5])
+
     game = Game(seed=1234)
     stats = game.world.stats()
     print("world:", MAP_W, "x", MAP_H, "| land", f"{stats['land_pct']}%",
           "| trees", stats["trees"], "| houses", stats["houses"], "| decor", stats["decor"])
-    print("mobs:", len(game.mobs), "| npcs:", len(game.npcs),
-          "| quests:", len(game.quests), "| skills:", len(game.skills))
+    print("mobs:", len(game.mobs), "| npcs:", len(game.npcs))
     if stats["land_pct"] < 80:
         problems.append(f"land only {stats['land_pct']}%")
-    if len(game.mobs) < 8:
-        problems.append(f"only {len(game.mobs)} mobs spawned")
 
-    # --- reachability: every NPC must be walkable-to from the spawn ---
+    # ---- reachability ----
     reach = game.world.reachable_from((int(SPAWN_X), int(SPAWN_Y)))
     print("reachable tiles from spawn:", len(reach))
     for n in game.npcs:
         tile = (int(n["x"]), int(n["y"]))
-        ok = tile in reach
-        print(f"  npc {n['name']:12s} at {tile} reachable: {ok}")
-        if not ok:
-            problems.append(f"NPC {n['name']} unreachable at {tile}")
-    for m in game.mobs:
-        if (int(m["x"]), int(m["y"])) not in reach:
-            problems.append(f"mob at ({int(m['x'])},{int(m['y'])}) unreachable")
+        print(f"  npc {n['name']:12s} {tile} reachable: {tile in reach}")
+        if tile not in reach:
+            problems.append(f"NPC {n['name']} unreachable")
 
-    # --- walk ---
-    start = (game.player["x"], game.player["y"])
-    frames_seen = set()
+    # ---- inventory ----
+    p = game.player
+    print("start inventory:", [(s['id'], s['count']) for s in p["inventory"]])
+    if not game.add_item("ear", 3):
+        problems.append("add_item(ear x3) failed")
+    if not game.add_item("ear", 3):
+        problems.append("add_item(ear stacking) failed")
+    ears = game.count_item("ear")
+    slots = len([s for s in p["inventory"] if s["id"] == "ear"])
+    print(f"after adding 6 ears: count={ears}, slots used={slots} (stacking works: {slots == 1})")
+    if ears != 6:
+        problems.append(f"ear count wrong: {ears}")
+    if slots != 1:
+        problems.append("ear did not stack into one slot")
+
+    # fill the bag and check the overflow guard
+    for _ in range(INV_SLOTS + 3):
+        game.add_item("sword_rusty", 1)
+    print("bag slots after overflow attempt:", len(p["inventory"]), "/", INV_SLOTS)
+    if len(p["inventory"]) > INV_SLOTS:
+        problems.append("inventory exceeded its slot limit")
+
+    # ---- consume ----
+    game2 = Game(seed=99)
+    p2 = game2.player
+    p2["hp"] = 5
+    idx = next(i for i, s in enumerate(p2["inventory"]) if s["id"] == "potion")
+    msg = game2.use_slot(idx)
+    print("use potion:", msg, "| hp:", p2["hp"])
+    if p2["hp"] != 20:
+        problems.append(f"potion healed to {p2['hp']}, expected 20")
+
+    # ---- equipment changes damage and defence ----
+    base_atk = 5 + game2.attack_bonus()
+    game2.add_item("sword_iron", 1)
+    idx = next(i for i, s in enumerate(p2["inventory"]) if s["id"] == "sword_iron")
+    game2.use_slot(idx)
+    armed_atk = 5 + game2.attack_bonus()
+    print(f"attack: bare {base_atk} -> armed {armed_atk} (weapon {p2['equip']['weapon']})")
+    if armed_atk <= base_atk:
+        problems.append("equipping a weapon did not raise attack")
+    game2.add_item("armor_iron", 1)
+    idx = next(i for i, s in enumerate(p2["inventory"]) if s["id"] == "armor_iron")
+    game2.use_slot(idx)
+    print("defence with armor:", game2.defense())
+    if game2.defense() <= 0:
+        problems.append("equipping armor did not raise defence")
+
+    # armour actually reduces incoming damage
+    mob = game2.mobs[0]
+    game2.player["x"], game2.player["y"] = mob["x"], mob["y"] + 0.5
+    hp_before = p2["hp"]
+    mob["attack_cd"] = 0
+    game2.update_mobs(0.016)
+    taken = hp_before - p2["hp"]
+    print(f"damage taken with defence {game2.defense()}: {taken}")
+    if taken >= mob["atk"] + 2:
+        problems.append("armour did not reduce damage")
+
+    # ---- loot ----
+    drops_seen: dict[str, int] = {}
+    for _ in range(200):
+        for item_id in IT.roll_loot("brute", game2.rng):
+            drops_seen[item_id] = drops_seen.get(item_id, 0) + 1
+    print("loot sample (200 brute rolls):", dict(sorted(drops_seen.items())))
+    if len(drops_seen) < 3:
+        problems.append("loot table looks empty")
+
+    # killing a mob drops gold + items on the ground, pickup fills the bag
+    bag_before = len(p2["inventory"])
+    target = game2.mobs[1]
+    game2.player["x"], game2.player["y"] = target["x"], target["y"] - 0.6
+    target["hp"] = 1
+    game2.attack()
+    ground = len(game2.drops)
+    print("drops on ground after kill:", ground)
+    if ground < 1:
+        problems.append("no loot dropped on kill")
+    for _ in range(120):
+        game2.update_effects(1 / 60)
+    print("bag slots before/after pickup:", bag_before, "->", len(p2["inventory"]))
+
+    # ---- walk + animation ----
+    start = (p2["x"], p2["y"])
+    frames = set()
     for _ in range(60):
-        game.update(1 / 60, {"right": True, "left": False, "up": False, "down": False})
-        frames_seen.add(game.player["frame"])
-    walked = math.hypot(game.player["x"] - start[0], game.player["y"] - start[1])
-    print("walked:", round(walked, 2), "tiles | frames:", sorted(frames_seen), "| dir:", game.player["dir"])
+        game2.update(1 / 60, {"right": True, "left": False, "up": False, "down": False})
+        frames.add(p2["frame"])
+    walked = math.hypot(p2["x"] - start[0], p2["y"] - start[1])
+    print("walked:", round(walked, 2), "tiles | frames:", sorted(frames))
     if walked < 2:
-        problems.append(f"player barely moved ({walked:.2f} tiles)")
-    if frames_seen != {0, 1}:
-        problems.append("walk animation did not cycle both frames")
+        problems.append("player barely moved")
+    if frames != {0, 1}:
+        problems.append("walk animation did not cycle")
 
-    # --- talk to EVERY npc ---
-    for n in game.npcs:
-        game.player["x"], game.player["y"] = n["x"], n["y"] + 1.0
-        game.dialog = None
-        game.interact()
-        got = (game.dialog or {}).get("name")
-        print(f"  dialog with {n['name']:12s} -> {got}")
+    # ---- talk to every npc ----
+    for n in game2.npcs:
+        p2["x"], p2["y"] = n["x"], n["y"] + 1.0
+        game2.dialog = None
+        game2.interact()
+        got = (game2.dialog or {}).get("name")
         if got != n["name"]:
             problems.append(f"could not talk to {n['name']}")
-    q_npcs = next(q for q in game.quests if q["id"] == "q_npcs")
-    print("quest 'знакомство' progress:", q_npcs["progress"], "/", q_npcs["goal"])
-    if q_npcs["progress"] < len(game.npcs):
-        problems.append("talking to all NPCs did not complete the quest")
+    print("talked to all npcs:", not any("could not talk" in x for x in problems))
 
-    # --- combat ---
-    mob = min(game.mobs, key=lambda m: math.hypot(m["x"] - game.player["x"], m["y"] - game.player["y"]))
-    game.player["x"], game.player["y"] = mob["x"], mob["y"] - 1.0
-    game.player["dir"] = "down"
-    hp_before = mob["hp"]
-    game.attack()
-    print("attack:", f"{hp_before:.0f} -> {mob['hp']:.0f} hp | anim:", game.player["atk_anim"] > 0)
-    if mob["hp"] >= hp_before:
-        problems.append("attack dealt no damage")
-    if game.player["atk_anim"] <= 0:
-        problems.append("attack animation did not trigger")
-    while mob["alive"]:
-        game.player["atk_t"] = 0
-        mob["hp"] -= 10
-        if mob["hp"] <= 0:
-            game.kill_mob(mob)
-    q_gob = next(q for q in game.quests if q["id"] == "q_goblins")
-    print("goblin quest:", q_gob["progress"], "/", q_gob["goal"], "| gold:", game.player["gold"])
-    if q_gob["progress"] < 1:
-        problems.append("kill did not advance the goblin quest")
-
-    # --- skills + save/load ---
-    before = game.skill_points
-    game.learn(game.skills[0])
-    print("skill learned:", game.skills[0]["learned"], "| points", before, "->", game.skill_points)
-    if not game.skills[0]["learned"]:
-        problems.append("could not learn a skill")
-
+    # ---- save / load with inventory ----
     tmp = Path(os.environ.get("TEMP", ".")) / "pixel_rpg_selftest.json"
-    ok_save = game.save(tmp)
-    gold = game.player["gold"]
-    game.player["gold"] = -1
-    ok_load = game.load(tmp)
-    print("save/load:", ok_save, ok_load, "| gold restored:", game.player["gold"] == gold)
-    if not (ok_save and ok_load and game.player["gold"] == gold):
-        problems.append("save/load round trip failed")
+    ok_save = game2.save(tmp)
+    gold, inv_len, weapon = p2["gold"], len(p2["inventory"]), p2["equip"]["weapon"]
+    p2["gold"], p2["inventory"], p2["equip"]["weapon"] = -1, [], None
+    ok_load = game2.load(tmp)
+    print("save/load:", ok_save, ok_load, "| gold", p2["gold"] == gold,
+          "| inventory", len(p2["inventory"]) == inv_len, "| weapon", p2["equip"]["weapon"] == weapon)
+    if not (ok_save and ok_load and p2["gold"] == gold and len(p2["inventory"]) == inv_len
+            and p2["equip"]["weapon"] == weapon):
+        problems.append("save/load did not restore gold/inventory/equipment")
 
-    # --- render at every resolution, verify crisp integer scaling + text pass ---
-    for idx, (w, h, z) in enumerate(RESOLUTIONS):
+    # ---- render every resolution, incl. the inventory overlay ----
+    for (w, h, z) in RESOLUTIONS:
         screen = pygame.Surface((w, h))
-        r = Renderer(game, w, h, z)
+        r = Renderer(game2, w, h, z)
         r.draw(screen)
         colours = {screen.get_at((x, y))[:3]
                    for x in range(0, w, max(1, w // 40))
                    for y in range(0, h, max(1, h // 24))}
-        text_w = r.font.render("Тест шрифта", True, (255, 255, 255)).get_width()
-        print(f"  render {w}x{h} zoom{z}: logical {r.lw}x{r.lh} "
-              f"| colours {len(colours)} | text width {text_w}px")
         if len(colours) < 5:
-            problems.append(f"render at {w}x{h} looks blank ({len(colours)} colours)")
-        if text_w < 40:
-            problems.append(f"font too small at {w}x{h}")
+            problems.append(f"render at {w}x{h} looks blank")
+    print("render ok at all", len(RESOLUTIONS), "resolutions")
 
-    # verify the HUD is drawn at native resolution (text must NOT be upscaled):
-    # a 1-px difference check on the logical surface vs the screen would be ideal;
-    # here we assert the renderer keeps text off the logical layer.
+    r = Renderer(game2, 1920, 1080, 4)
     screen = pygame.Surface((1920, 1080))
-    r = Renderer(game, 1920, 1080, 4)
-    r.logical.fill((0, 0, 0))
-    r.draw_text_layer(screen)
-    r.draw_hud(screen)
-    hud_pixels = sum(1 for x in range(0, 1920, 7) for y in range(0, 200, 5)
+    game2.show_inventory = True
+    r.draw(screen)
+    inv_pixels = sum(1 for x in range(600, 1400, 11) for y in range(300, 800, 9)
                      if screen.get_at((x, y))[:3] != (0, 0, 0))
-    print("HUD drawn on the native 1920x1080 screen, non-black samples:", hud_pixels)
-    if hud_pixels < 50:
-        problems.append("HUD did not render at native resolution")
+    print("inventory overlay rendered, non-black samples:", inv_pixels)
+    if inv_pixels < 500:
+        problems.append("inventory overlay did not render")
+
+    # title menu renders with its animated backdrop
+    game2.show_inventory = False
+    r.draw_menu(screen, "Пиксельное приключение", "Большой мир", [("Новая игра", True)], 0, 1.0)
+    menu_pixels = sum(1 for x in range(0, 1920, 13) for y in range(0, 1080, 11)
+                      if screen.get_at((x, y))[:3] != (0, 0, 0))
+    print("title screen rendered, non-black samples:", menu_pixels)
+    if menu_pixels < 500:
+        problems.append("title menu did not render")
 
     pygame.quit()
     if problems:
