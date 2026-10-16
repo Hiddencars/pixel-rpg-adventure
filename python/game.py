@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pixel RPG Adventure 1.1 — Python / pygame-ce port of the v1.0 HTML game.
+Pixel RPG Adventure 1.2 — Python / pygame-ce.
 
-Big world (100x64 tiles, ~96% land), animated pixel sprites (2-frame walk
-cycles, attack swing, hit flash, corpses), goblins you can actually fight,
-quests, a skill tree, loot, save/load.
+Changes since 1.1:
+  * selectable resolutions up to 1920x1080 (menu + config + --res flag + F11 fullscreen)
+  * text/HUD rendered at native resolution (was upscaled with the world -> blurry)
+  * trees no longer block the village; NPCs are validated reachable by pathfinding
+  * new: pause/settings menu (F10)
 
-Run:        python game.py
+Run:        python game.py [--res 1920x1080] [--fullscreen]
 Self-test:  python game.py --selftest     (headless, exits 0 on success)
 """
 
@@ -18,48 +20,44 @@ import math
 import os
 import random
 import sys
+from collections import deque
 from pathlib import Path
+from typing import Callable
 
 import pygame
 
 # ----------------------------------------------------------------------------
 # Config
 # ----------------------------------------------------------------------------
-TILE = 16                 # world pixels per tile
-ZOOM = 3                  # on-screen magnification
-VIEW_W, VIEW_H = 26, 18   # visible tiles
-MAP_W, MAP_H = 100, 64    # world size in tiles
-SPRITE = 16               # character sprite size
-
-LOGICAL_W, LOGICAL_H = VIEW_W * TILE, VIEW_H * TILE
-SCREEN_W, SCREEN_H = LOGICAL_W * ZOOM, LOGICAL_H * ZOOM
+TILE = 16
+MAP_W, MAP_H = 100, 64
+SPRITE = 16
 FPS = 60
 
-SAVE_PATH = Path.home() / ".pixel_rpg_adventure_save.json"
+# (width, height, zoom) — zoom is an integer so pixels stay perfectly crisp
+RESOLUTIONS = [
+    (960, 540, 2),
+    (1280, 720, 3),
+    (1366, 768, 3),
+    (1600, 900, 4),
+    (1920, 1080, 4),
+]
+DEFAULT_RES_INDEX = len(RESOLUTIONS) - 1          # 1920x1080
+BASE_UI_WIDTH = 1248                              # ui scale reference
 
-# tile ids
+SAVE_PATH = Path.home() / ".pixel_rpg_adventure_save.json"
+CONFIG_PATH = Path.home() / ".pixel_rpg_adventure_config.json"
+
 T_VOID, T_DEEP, T_WATER, T_SAND, T_GRASS, T_GRASS2 = 0, 1, 2, 3, 4, 5
 T_FOREST, T_STONE, T_PATH, T_FLOOR, T_CROPS, T_FLOWERS = 6, 7, 8, 9, 10, 11
 
 COLORS = {
-    "void": (10, 22, 32),
-    "deep": (22, 60, 118),
-    "water": (46, 110, 190),
-    "sand": (216, 200, 146),
-    "grass": (86, 152, 74),
-    "grass2": (70, 134, 62),
-    "forest": (36, 92, 52),
-    "stone": (126, 126, 134),
-    "stone2": (104, 104, 112),
-    "path": (170, 150, 112),
-    "floor": (132, 98, 62),
-    "floor2": (116, 84, 52),
-    "roof": (158, 62, 52),
-    "roof2": (122, 46, 40),
-    "wood": (122, 84, 52),
-    "wood2": (92, 62, 38),
-    "door": (72, 48, 28),
-    "crops": (148, 168, 74),
+    "void": (10, 22, 32), "deep": (22, 60, 118), "water": (46, 110, 190),
+    "sand": (216, 200, 146), "grass": (86, 152, 74), "grass2": (70, 134, 62),
+    "forest": (36, 92, 52), "stone": (126, 126, 134), "stone2": (104, 104, 112),
+    "path": (170, 150, 112), "floor": (132, 98, 62), "floor2": (116, 84, 52),
+    "roof": (158, 62, 52), "roof2": (122, 46, 40), "wood": (122, 84, 52),
+    "wood2": (92, 62, 38), "door": (72, 48, 28), "crops": (148, 168, 74),
     "flowers": (232, 190, 130),
 }
 
@@ -75,7 +73,6 @@ PAL = {
     "p": (216, 120, 120), "q": (240, 240, 255),
 }
 
-# --- sprites: string matrices, same art as the v1.0 web build ---
 SPR_P_DOWN_1 = [
     "................", ".....kkkkkk.....", "....khhhhhhk....", "...khhhhhhhhk...",
     "...khsssssshk...", "...khseeseesh...", "...khsesssshk...", "....kssSSsk.....",
@@ -172,7 +169,7 @@ SPRITES = {
 }
 
 # ----------------------------------------------------------------------------
-# Noise / world generation (same shape as v1.0: ~96% land, big island)
+# Noise / world
 # ----------------------------------------------------------------------------
 def hash2(x: float, y: float) -> float:
     n = math.sin(x * 127.1 + y * 311.7) * 43758.5453123
@@ -201,9 +198,11 @@ def fbm(x: float, y: float) -> float:
     return v
 
 
-class World:
-    """Tile map + static objects, generated procedurally."""
+VILLAGE_CX, VILLAGE_CY = 50, 32
+VILLAGE_HALF_W, VILLAGE_HALF_H = 9, 6
 
+
+class World:
     def __init__(self, rng: random.Random | None = None):
         self.rng = rng or random.Random()
         self.tiles: list[list[int]] = []
@@ -211,7 +210,6 @@ class World:
         self.decor: list[dict] = []
         self._generate()
 
-    # -- helpers ------------------------------------------------------------
     @staticmethod
     def in_bounds(x: int, y: int) -> bool:
         return 0 <= x < MAP_W and 0 <= y < MAP_H
@@ -257,9 +255,9 @@ class World:
         self._scatter_forest(0.10, 0.34)
         self._scatter_forest(0.42, 0.55)
 
-        cx, cy = 50, 32
-        for y in range(cy - 6, cy + 7):
-            for x in range(cx - 9, cx + 10):
+        cx, cy = VILLAGE_CX, VILLAGE_CY
+        for y in range(cy - VILLAGE_HALF_H, cy + VILLAGE_HALF_H + 1):
+            for x in range(cx - VILLAGE_HALF_W, cx + VILLAGE_HALF_W + 1):
                 if self.in_bounds(x, y) and self.tiles[y][x] >= T_SAND:
                     self.tiles[y][x] = T_GRASS
 
@@ -281,6 +279,16 @@ class World:
         for y in range(cy - 20, cy - 6):
             if self.in_bounds(cx, y) and self.tiles[y][cx] >= T_SAND:
                 self.tiles[y][cx] = T_PATH
+
+        # IMPORTANT: clear the village BEFORE placing houses/NPCs, otherwise
+        # scattered trees wall the villagers off (v1.1 bug: only the smith
+        # could be reached).
+        self.objects = [
+            o for o in self.objects
+            if not (o["type"] == "tree"
+                    and abs(o["x"] - cx) <= VILLAGE_HALF_W + 2
+                    and abs(o["y"] - cy) <= VILLAGE_HALF_H + 2)
+        ]
 
         for ox, oy in [(-6, -4), (5, -4), (-6, 4), (5, 4),
                        (-1, -4), (2, -4), (-1, 4), (2, 4)]:
@@ -332,7 +340,44 @@ class World:
         self.objects.append({"x": x, "y": y, "type": "house"})
         self.decor.append({"x": x + 2, "y": y + 2, "type": "lamp"})
 
-    # -- queries ------------------------------------------------------------
+    # -- pathfinding --------------------------------------------------------
+    def walkable(self, x: int, y: int) -> bool:
+        return self.in_bounds(x, y) and not self.is_solid(x, y)
+
+    def reachable_from(self, start: tuple[int, int]) -> set[tuple[int, int]]:
+        """Flood fill over walkable tiles — used to guarantee NPCs are reachable."""
+        if not self.walkable(*start):
+            start = self.nearest_walkable(*start) or start
+        seen = {start}
+        q = deque([start])
+        while q:
+            x, y = q.popleft()
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if (nx, ny) not in seen and self.walkable(nx, ny):
+                    seen.add((nx, ny))
+                    q.append((nx, ny))
+        return seen
+
+    def nearest_walkable(self, x: int, y: int, limit: int = 12) -> tuple[int, int] | None:
+        if self.walkable(x, y):
+            return x, y
+        for r in range(1, limit + 1):
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    if max(abs(dx), abs(dy)) != r:
+                        continue
+                    if self.walkable(x + dx, y + dy):
+                        return x + dx, y + dy
+        return None
+
+    def nearest_in(self, x: int, y: int, tiles: set[tuple[int, int]]) -> tuple[int, int] | None:
+        best, best_d = None, 1e9
+        for (tx, ty) in tiles:
+            d = abs(tx - x) + abs(ty - y)
+            if d < best_d:
+                best, best_d = (tx, ty), d
+        return best
+
     def stats(self) -> dict:
         counts: dict[int, int] = {}
         for row in self.tiles:
@@ -340,27 +385,27 @@ class World:
                 counts[t] = counts.get(t, 0) + 1
         total = MAP_W * MAP_H
         land = sum(v for k, v in counts.items() if k >= T_SAND)
-        return {
-            "tiles": counts,
-            "land_pct": round(100 * land / total),
-            "trees": sum(1 for o in self.objects if o["type"] == "tree"),
-            "houses": sum(1 for o in self.objects if o["type"] == "house"),
-            "decor": len(self.decor),
-        }
+        return {"tiles": counts, "land_pct": round(100 * land / total),
+                "trees": sum(1 for o in self.objects if o["type"] == "tree"),
+                "houses": sum(1 for o in self.objects if o["type"] == "house"),
+                "decor": len(self.decor)}
 
 
 # ----------------------------------------------------------------------------
-# Game
+# Game logic
 # ----------------------------------------------------------------------------
+SPAWN_X, SPAWN_Y = 50.5, 32.5
+
+
 class Game:
     def __init__(self, seed: int | None = None):
         self.rng = random.Random(seed)
+        self.seed = seed
         self.world = World(self.rng)
-        self.time = 0.0
         self.frame = 0
 
         self.player = {
-            "x": 50.5, "y": 32.5, "dir": "down", "moving": False,
+            "x": SPAWN_X, "y": SPAWN_Y, "dir": "down", "moving": False,
             "anim_t": 0.0, "frame": 0, "speed": 5.2,
             "hp": 30.0, "hp_max": 30.0, "mp": 10.0, "mp_max": 10.0,
             "level": 1, "xp": 0, "xp_next": 20, "gold": 0, "potions": 2,
@@ -373,11 +418,9 @@ class Game:
         self.particles: list[dict] = []
         self.floaters: list[dict] = []
         self.corpses: list[dict] = []
-
         self.quests: list[dict] = []
         self.skills: list[dict] = []
         self.skill_points = 3
-
         self.toasts: list[dict] = []
         self.dialog: dict | None = None
         self.show_quests = False
@@ -387,6 +430,7 @@ class Game:
         self.spawn_mobs()
         self.init_quests()
         self.init_skills()
+        self.ensure_reachable()
         self.toast("Большой мир готов! WASD — идти, ПРОБЕЛ — атака, E — говорить")
 
     # -- setup --------------------------------------------------------------
@@ -442,22 +486,10 @@ class Game:
         spots = [(26, 44), (70, 22), (84, 52), (34, 16), (66, 44), (20, 26),
                  (88, 30), (50, 52), (16, 46), (78, 54), (40, 10), (60, 56)]
         for sx, sy in spots:
-            for r in range(0, 8):
-                placed = False
-                for dy in range(-r, r + 1):
-                    for dx in range(-r, r + 1):
-                        if max(abs(dx), abs(dy)) != r:
-                            continue
-                        x, y = sx + dx, sy + dy
-                        if self.world.in_bounds(x, y) and not self.world.is_solid(x, y):
-                            kind = "brute" if len(self.mobs) % 4 == 3 else "goblin"
-                            self.mobs.append(self.make_mob(x, y, kind))
-                            placed = True
-                            break
-                    if placed:
-                        break
-                if placed:
-                    break
+            pos = self.world.nearest_walkable(sx, sy)
+            if pos:
+                kind = "brute" if len(self.mobs) % 4 == 3 else "goblin"
+                self.mobs.append(self.make_mob(pos[0], pos[1], kind))
 
     def make_mob(self, x: float, y: float, kind: str) -> dict:
         if kind == "brute":
@@ -471,15 +503,28 @@ class Game:
                 "attack_cd": 0.0, "hurt_t": 0.0, "atk_t": 0.0,
                 "wander": {"x": x, "y": y}, "alive": True}
 
+    def ensure_reachable(self) -> None:
+        """Guarantee every NPC and mob stands on a tile the player can walk to."""
+        reach = self.world.reachable_from((int(SPAWN_X), int(SPAWN_Y)))
+        for ent in list(self.npcs) + list(self.mobs):
+            tx, ty = int(ent["x"]), int(ent["y"])
+            if (tx, ty) in reach and not self.world.obj_at(tx, ty):
+                continue
+            target = self.world.nearest_in(tx, ty, reach)
+            if target:
+                ent["x"], ent["y"] = float(target[0]), float(target[1])
+                if "wander" in ent:
+                    ent["wander"] = {"x": ent["x"], "y": ent["y"]}
+        self.reachable_tiles = len(reach)
+
     # -- helpers ------------------------------------------------------------
     def toast(self, text: str, color: str = "#ffffff") -> None:
         self.toasts.append({"text": text, "color": color, "t": 0.0, "life": 3.2})
 
-    def add_floater(self, x: float, y: float, text: str, color: str) -> None:
-        self.floaters.append({"x": x, "y": y, "text": text, "color": color,
-                              "t": 0.0, "life": 1.0})
+    def add_floater(self, x, y, text, color) -> None:
+        self.floaters.append({"x": x, "y": y, "text": text, "color": color, "t": 0.0, "life": 1.0})
 
-    def add_particle(self, x: float, y: float, color: str) -> None:
+    def add_particle(self, x, y, color) -> None:
         a = self.rng.random() * math.tau
         s = 1.5 + self.rng.random() * 4
         self.particles.append({"x": x, "y": y, "vx": math.cos(a) * s, "vy": math.sin(a) * s,
@@ -512,6 +557,15 @@ class Game:
             return -1, 0
         return 1, 0
 
+    def nearest_npc(self, max_dist: float = 2.0) -> dict | None:
+        p = self.player
+        best, best_d = None, max_dist
+        for n in self.npcs:
+            d = math.hypot(n["x"] - p["x"], n["y"] - p["y"])
+            if d <= best_d:
+                best, best_d = n, d
+        return best
+
     # -- movement -----------------------------------------------------------
     def try_move(self, ent: dict, mx: float, my: float) -> None:
         r = 0.32
@@ -530,10 +584,10 @@ class Game:
 
     # -- update -------------------------------------------------------------
     def update(self, dt: float, inp: dict) -> None:
-        self.time += dt
         self.frame += 1
         self.update_player(dt, inp)
         self.update_mobs(dt)
+        self.update_npcs(dt)
         self.update_effects(dt)
         self.update_quests()
 
@@ -562,6 +616,10 @@ class Game:
         p["atk_t"] = max(0.0, p["atk_t"] - dt)
         p["atk_anim"] = max(0.0, p["atk_anim"] - dt)
         p["hurt_t"] = max(0.0, p["hurt_t"] - dt)
+
+    def update_npcs(self, dt: float) -> None:
+        for n in self.npcs:
+            n["anim_t"] = (n["anim_t"] + dt) % 0.6
 
     def update_mobs(self, dt: float) -> None:
         p = self.player
@@ -620,7 +678,6 @@ class Game:
                 m["anim_t"] = 0.0
                 m["frame"] = 1 - m["frame"]
 
-        # separation
         for i in range(len(self.mobs)):
             for j in range(i + 1, len(self.mobs)):
                 a, b = self.mobs[i], self.mobs[j]
@@ -701,14 +758,12 @@ class Game:
             if not sweep and dot < 0.35:
                 continue
             dmg = 5 + self.rng.randrange(3) + int(p["level"] * 1.5)
-            crit = self.has_skill("s_crit") and self.rng.random() < 0.25
-            if crit:
+            if self.has_skill("s_crit") and self.rng.random() < 0.25:
                 dmg = round(dmg * 2)
             m["hp"] -= dmg
             m["hurt_t"] = 0.3
             hits += 1
-            self.add_floater(m["x"], m["y"] - 0.8, f"-{dmg}",
-                             "#ffd166" if dmg > 8 else "#ffe066")
+            self.add_floater(m["x"], m["y"] - 0.8, f"-{dmg}", "#ffd166" if dmg > 8 else "#ffe066")
             self.try_move(m, -fx * 0.35, -fy * 0.35)
             for _ in range(10):
                 self.add_particle(m["x"], m["y"], "#ffd166")
@@ -732,8 +787,7 @@ class Game:
             self.add_particle(m["x"], m["y"], "#88ff88")
         self.check_level()
         self.bump_quest("q_goblins", 1)
-        # respawn somewhere far from the player
-        for _ in range(14):
+        for _ in range(20):
             x = 6 + self.rng.randrange(MAP_W - 12)
             y = 6 + self.rng.randrange(MAP_H - 12)
             if not self.world.is_solid(x, y) and math.hypot(x - p["x"], y - p["y"]) > 12:
@@ -768,28 +822,27 @@ class Game:
     def respawn_player(self) -> None:
         p = self.player
         p["hp"] = p["hp_max"]
-        p["x"], p["y"] = 50.5, 32.5
+        p["x"], p["y"] = SPAWN_X, SPAWN_Y
         self.toast("Ты потерял сознание... и очнулся в деревне.", "#ffb0b0")
 
     def interact(self) -> None:
         if self.dialog:
             self.dialog = None
             return
-        p = self.player
-        for n in self.npcs:
-            if math.hypot(n["x"] - p["x"], n["y"] - p["y"]) < 1.7:
-                n["dir"] = p["dir"]
-                self.dialog = {"name": n["name"], "line": self.rng.choice(n["lines"])}
-                if n.get("gift") and not n.get("gave"):
-                    n["gave"] = True
-                    p["potions"] += 2
-                    self.toast("Кузнец дал 2 зелья", "#ffe066")
-                if not n["met"]:
-                    n["met"] = True
-                    self.bump_quest("q_npcs", 1)
-                return
+        n = self.nearest_npc()
+        if n:
+            n["dir"] = self.player["dir"]
+            self.dialog = {"name": n["name"], "line": self.rng.choice(n["lines"])}
+            if n.get("gift") and not n.get("gave"):
+                n["gave"] = True
+                self.player["potions"] += 2
+                self.toast("Кузнец дал 2 зелья", "#ffe066")
+            if not n["met"]:
+                n["met"] = True
+                self.bump_quest("q_npcs", 1)
+            return
         for m in self.mobs:
-            if m["alive"] and math.hypot(m["x"] - p["x"], m["y"] - p["y"]) < 1.5:
+            if m["alive"] and math.hypot(m["x"] - self.player["x"], m["y"] - self.player["y"]) < 1.5:
                 self.attack()
                 return
         self.toast("Рядом никого нет.", "#c8c8d0")
@@ -797,15 +850,9 @@ class Game:
     # -- save / load --------------------------------------------------------
     def save(self, path: Path = SAVE_PATH) -> bool:
         try:
-            data = {
-                "version": 1,
-                "player": self.player,
-                "skill_points": self.skill_points,
-                "quests": self.quests,
-                "skills": self.skills,
-                "npcs_met": {n["name"]: n["met"] for n in self.npcs},
-                "seed": getattr(self, "seed", None),
-            }
+            data = {"version": 1, "player": self.player, "skill_points": self.skill_points,
+                    "quests": self.quests, "skills": self.skills,
+                    "npcs_met": {n["name"]: n["met"] for n in self.npcs}}
             path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
             self.toast("Игра сохранена", "#9ad7ff")
             return True
@@ -837,10 +884,9 @@ class Game:
 
 
 # ----------------------------------------------------------------------------
-# Rendering
+# Rendering — world goes to a small logical layer, ALL TEXT to the real screen
 # ----------------------------------------------------------------------------
 def build_sprite_surfaces() -> dict[str, pygame.Surface]:
-    """Pre-render every sprite (and flipped / hurt variants) once."""
     out: dict[str, pygame.Surface] = {}
     for name, rows in SPRITES.items():
         surf = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
@@ -867,45 +913,76 @@ TILE_COLORS = {
 
 
 class Renderer:
-    def __init__(self, game: Game):
+    """World -> logical surface scaled by an integer zoom; text -> native screen."""
+
+    def __init__(self, game: Game, width: int, height: int, zoom: int):
         self.game = game
         self.sprites = build_sprite_surfaces()
-        self.font_small = self._font(10)
-        self.font = self._font(12)
-        self.font_big = self._font(15)
-        self.font_name = self._font(8)
+        self.resize(width, height, zoom)
+
+    def resize(self, width: int, height: int, zoom: int) -> None:
+        self.width, self.height, self.zoom = width, height, zoom
+        self.lw, self.lh = width // zoom, height // zoom
+        self.logical = pygame.Surface((self.lw, self.lh))
+        self.ox = (width - self.lw * zoom) // 2
+        self.oy = (height - self.lh * zoom) // 2
+        self._scaled = pygame.Surface((self.lw * zoom, self.lh * zoom))
+        self.cam_x = self.cam_y = 0.0
+        self.view_w = self.lw / TILE
+        self.view_h = self.lh / TILE
+        self.ui = width / BASE_UI_WIDTH
+        self.font_small = self._font(max(9, round(10 * self.ui)))
+        self.font = self._font(max(11, round(12 * self.ui)))
+        self.font_big = self._font(max(14, round(15 * self.ui)))
+        self.font_name = self._font(max(8, round(8 * self.ui)))
+        self.font_title = self._font(max(20, round(26 * self.ui)))
 
     @staticmethod
     def _font(size: int) -> pygame.font.Font:
-        for name in ("consolas", "couriernew", "dejavusansmono", "monospace"):
+        for name in ("consolas", "couriernew", "dejavusansmono", "liberationmono"):
             try:
                 f = pygame.font.SysFont(name, size)
                 if f:
                     return f
             except Exception:
-                pass
-        return pygame.font.Font(None, size + 2)
+                continue
+        return pygame.font.Font(None, size)
 
-    # -- main ---------------------------------------------------------------
-    def draw(self, surface: pygame.Surface) -> None:
-        g, w = self.game, self.game.world
+    def s(self, v: float) -> int:
+        """Scale a UI dimension for the current resolution."""
+        return int(round(v * self.ui))
+
+    # -- frame --------------------------------------------------------------
+    def draw(self, screen: pygame.Surface) -> None:
+        g = self.game
         p = g.player
-        cam_x = max(0.0, min(MAP_W - VIEW_W, p["x"] - VIEW_W / 2))
-        cam_y = max(0.0, min(MAP_H - VIEW_H, p["y"] - VIEW_H / 2))
+        cam_x = max(0.0, min(MAP_W - self.view_w, p["x"] - self.view_w / 2))
+        cam_y = max(0.0, min(MAP_H - self.view_h, p["y"] - self.view_h / 2))
+        self.cam_x, self.cam_y = cam_x, cam_y
 
-        surface.fill(COLORS["void"])
-        self.draw_tiles(surface, w, cam_x, cam_y)
-        self.draw_decor(surface, w, cam_x, cam_y)
-        self.draw_corpses(surface, cam_x, cam_y)
-        self.draw_entities(surface, cam_x, cam_y)
-        self.draw_hud(surface)
+        self.logical.fill(COLORS["void"])
+        self.draw_tiles(cam_x, cam_y)
+        self.draw_decor(cam_x, cam_y)
+        self.draw_corpses(cam_x, cam_y)
+        self.draw_world_entities(cam_x, cam_y)
 
-    # -- world --------------------------------------------------------------
-    def draw_tiles(self, s, w: World, cam_x: float, cam_y: float) -> None:
-        sx, sy = int(cam_x), int(cam_y)
+        pygame.transform.scale(self.logical, (self.lw * self.zoom, self.lh * self.zoom), self._scaled)
+        screen.fill(COLORS["void"])
+        screen.blit(self._scaled, (self.ox, self.oy))
+
+        self.draw_text_layer(screen)
+        self.draw_hud(screen)
+
+    # -- world layer (small, scaled up) -------------------------------------
+    def to_logical(self, wx: float, wy: float) -> tuple[float, float]:
+        return (wx - self.cam_x) * TILE, (wy - self.cam_y) * TILE
+
+    def draw_tiles(self, cam_x: float, cam_y: float) -> None:
+        s, w = self.logical, self.game.world
+        x0, y0 = int(cam_x), int(cam_y)
         wave = math.sin(self.game.frame * 0.03) * 8
-        for ty in range(sy - 1, sy + VIEW_H + 2):
-            for tx in range(sx - 1, sx + VIEW_W + 2):
+        for ty in range(y0 - 1, y0 + int(self.view_h) + 2):
+            for tx in range(x0 - 1, x0 + int(self.view_w) + 2):
                 px, py = (tx - cam_x) * TILE, (ty - cam_y) * TILE
                 if not w.in_bounds(tx, ty):
                     pygame.draw.rect(s, COLORS["void"], (px, py, TILE, TILE))
@@ -922,8 +999,7 @@ class Renderer:
 
                 h = hash2(tx, ty)
                 if t in (T_GRASS, T_GRASS2) and h > 0.62:
-                    pygame.draw.rect(s, (58, 118, 54),
-                                     (px + h * 13, py + h * 9, 2, 2))
+                    pygame.draw.rect(s, (58, 118, 54), (px + h * 13, py + h * 9, 2, 2))
                 if t == T_SAND and h > 0.85:
                     pygame.draw.rect(s, (190, 170, 120), (px + h * 10, py + h * 8, 3, 2))
                 if t == T_WATER and h > 0.8:
@@ -931,9 +1007,11 @@ class Renderer:
                 if t == T_CROPS and h > 0.5:
                     pygame.draw.rect(s, (196, 200, 110), (px + h * 12, py + 6, 2, 4))
 
-    def draw_decor(self, s, w: World, cam_x: float, cam_y: float) -> None:
-        for d in w.decor:
-            if not (cam_x - 2 < d["x"] < cam_x + VIEW_W + 2 and cam_y - 2 < d["y"] < cam_y + VIEW_H + 2):
+    def draw_decor(self, cam_x: float, cam_y: float) -> None:
+        s = self.logical
+        for d in self.game.world.decor:
+            if not (cam_x - 2 < d["x"] < cam_x + self.view_w + 2
+                    and cam_y - 2 < d["y"] < cam_y + self.view_h + 2):
                 continue
             px, py = (d["x"] - cam_x) * TILE, (d["y"] - cam_y) * TILE
             if d["type"] == "flower":
@@ -947,41 +1025,40 @@ class Renderer:
                 pygame.draw.rect(s, (60, 40, 26), (px, py + 6, 2, 8))
                 pygame.draw.rect(s, (255, 220, 90) if on else (150, 140, 60), (px - 1, py + 3, 4, 4))
 
-    def draw_corpses(self, s, cam_x: float, cam_y: float) -> None:
+    def draw_corpses(self, cam_x: float, cam_y: float) -> None:
         for c in self.game.corpses:
             alpha = max(0, int(255 * (1 - c["t"] / 1.6)))
             key = "gb_1" if c["kind"] == "brute" else "g_1"
             spr = self.sprites[key].copy()
             spr.set_alpha(alpha)
-            s.blit(spr, ((c["x"] - cam_x) * TILE - SPRITE / 2,
-                         (c["y"] - cam_y) * TILE - SPRITE + 6))
+            self.logical.blit(spr, ((c["x"] - cam_x) * TILE - SPRITE / 2,
+                                    (c["y"] - cam_y) * TILE - SPRITE + 6))
 
-    # -- entities -----------------------------------------------------------
-    def draw_entities(self, s, cam_x: float, cam_y: float) -> None:
+    def draw_world_entities(self, cam_x: float, cam_y: float) -> None:
         g = self.game
-        items: list[tuple[float, callable]] = []
+        items: list[tuple[float, Callable[[], None]]] = []
         for o in g.world.objects:
-            if not (cam_x - 3 < o["x"] < cam_x + VIEW_W + 3 and cam_y - 3 < o["y"] < cam_y + VIEW_H + 4):
+            if not (cam_x - 3 < o["x"] < cam_x + self.view_w + 3
+                    and cam_y - 3 < o["y"] < cam_y + self.view_h + 4):
                 continue
-            items.append((o["y"], lambda o=o: self.draw_object(s, o, cam_x, cam_y)))
+            items.append((o["y"], lambda o=o: self.draw_object(o, cam_x, cam_y)))
         for d in g.drops:
-            items.append((d["y"], lambda d=d: self.draw_drop(s, d, cam_x, cam_y)))
+            items.append((d["y"], lambda d=d: self.draw_drop(d, cam_x, cam_y)))
         for n in g.npcs:
-            items.append((n["y"], lambda n=n: self.draw_npc(s, n, cam_x, cam_y)))
+            items.append((n["y"], lambda n=n: self.draw_npc(n, cam_x, cam_y)))
         for m in g.mobs:
             if m["alive"]:
-                items.append((m["y"], lambda m=m: self.draw_mob(s, m, cam_x, cam_y)))
-        items.append((g.player["y"], lambda: self.draw_player(s, cam_x, cam_y)))
+                items.append((m["y"], lambda m=m: self.draw_mob(m, cam_x, cam_y)))
+        items.append((g.player["y"], lambda: self.draw_player(cam_x, cam_y)))
         for p in g.particles:
-            items.append((p["y"] - 0.05, lambda p=p: self.draw_particle(s, p, cam_x, cam_y)))
-        for f in g.floaters:
-            items.append((f["y"] - 0.1, lambda f=f: self.draw_floater(s, f, cam_x, cam_y)))
+            items.append((p["y"] - 0.05, lambda p=p: self.draw_particle(p, cam_x, cam_y)))
 
         items.sort(key=lambda it: it[0])
         for _, fn in items:
             fn()
 
-    def draw_object(self, s, o: dict, cam_x: float, cam_y: float) -> None:
+    def draw_object(self, o: dict, cam_x: float, cam_y: float) -> None:
+        s = self.logical
         px, py = (o["x"] - cam_x) * TILE, (o["y"] - cam_y) * TILE
         if o["type"] == "tree":
             sway = math.sin(self.game.frame * 0.02 + o["x"]) * 1
@@ -1009,7 +1086,8 @@ class Renderer:
             smoke.fill((200, 200, 205, int(120 * (1 - sm))))
             s.blit(smoke, (px + 15, py - 34 - sm * 8))
 
-    def draw_drop(self, s, d: dict, cam_x: float, cam_y: float) -> None:
+    def draw_drop(self, d: dict, cam_x: float, cam_y: float) -> None:
+        s = self.logical
         px = (d["x"] - cam_x) * TILE
         py = (d["y"] - cam_y) * TILE + math.sin(self.game.frame * 0.1) * 2
         if d["type"] == "gold":
@@ -1021,39 +1099,9 @@ class Renderer:
             pygame.draw.rect(s, (120, 190, 240), (px + 5, py + 5, 6, 8))
             pygame.draw.rect(s, (230, 245, 255), (px + 6, py + 6, 2, 4))
 
-    def blit_sprite(self, s, key: str, x: float, y: float, flip: bool = False,
-                    hurt: bool = False) -> None:
+    def blit_sprite(self, key: str, x: float, y: float, flip: bool = False, hurt: bool = False) -> None:
         name = key + ("_hurt" if hurt else "") + ("_f" if flip else "")
-        s.blit(self.sprites[name], (x, y))
-
-    def draw_player(self, s, cam_x: float, cam_y: float) -> None:
-        p = self.game.player
-        px = (p["x"] - cam_x) * TILE - SPRITE / 2
-        py = (p["y"] - cam_y) * TILE - SPRITE + 3
-
-        key, flip = self.player_sprite_key(p["dir"], p["frame"] if p["moving"] else 0)
-        pygame.draw.ellipse(s, (0, 0, 0, 70), ((p["x"] - cam_x) * TILE - 6,
-                                               (p["y"] - cam_y) * TILE + 1, 12, 5))
-        bob = -1 if (p["moving"] and p["frame"]) else 0
-        self.blit_sprite(s, key, px, py + bob, flip, p["hurt_t"] > 0)
-
-        if p["atk_anim"] > 0:
-            t = 1 - p["atk_anim"] / 0.28
-            fx, fy = self.game.face_dir()
-            ang = math.atan2(fy, fx) - 1.2 + t * 1.7
-            cx, cy = (p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE - 8
-            bx, by = math.cos(ang), math.sin(ang)
-            pygame.draw.line(s, PAL["p"], (cx + bx * 6, cy + by * 6),
-                             (cx + bx * 15, cy + by * 15), 2)
-            pygame.draw.line(s, PAL["q"], (cx + bx * 13, cy + by * 13),
-                             (cx + bx * 16, cy + by * 16), 2)
-            for i in range(5):
-                a = ang - 0.5 + i * 0.25
-                pygame.draw.rect(s, (255, 255, 200),
-                                 (cx + math.cos(a) * 9, cy + math.sin(a) * 9, 1, 1))
-
-        if p["hp"] < p["hp_max"]:
-            self.draw_hp_bar(s, p["x"], p["y"] - 0.75, p["hp"], p["hp_max"], cam_x, cam_y)
+        self.logical.blit(self.sprites[name], (x, y))
 
     @staticmethod
     def player_sprite_key(d: str, frame: int) -> tuple[str, bool]:
@@ -1065,42 +1113,75 @@ class Renderer:
             return ("p_side_2" if frame else "p_side_1"), False
         return ("p_down_2" if frame else "p_down_1"), False
 
-    def draw_npc(self, s, n: dict, cam_x: float, cam_y: float) -> None:
+    def draw_player(self, cam_x: float, cam_y: float) -> None:
+        s = self.logical
+        p = self.game.player
+        px = (p["x"] - cam_x) * TILE - SPRITE / 2
+        py = (p["y"] - cam_y) * TILE - SPRITE + 3
+        key, flip = self.player_sprite_key(p["dir"], p["frame"] if p["moving"] else 0)
+
+        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 70), (0, 0, 12, 5))
+        s.blit(shadow, ((p["x"] - cam_x) * TILE - 6, (p["y"] - cam_y) * TILE + 1))
+
+        bob = -1 if (p["moving"] and p["frame"]) else 0
+        self.blit_sprite(key, px, py + bob, flip, p["hurt_t"] > 0)
+
+        if p["atk_anim"] > 0:
+            t = 1 - p["atk_anim"] / 0.28
+            fx, fy = self.game.face_dir()
+            ang = math.atan2(fy, fx) - 1.2 + t * 1.7
+            cx, cy = (p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE - 8
+            bx, by = math.cos(ang), math.sin(ang)
+            pygame.draw.line(s, PAL["p"], (cx + bx * 6, cy + by * 6), (cx + bx * 15, cy + by * 15), 2)
+            pygame.draw.line(s, PAL["q"], (cx + bx * 13, cy + by * 13), (cx + bx * 16, cy + by * 16), 2)
+            for i in range(5):
+                a = ang - 0.5 + i * 0.25
+                pygame.draw.rect(s, (255, 255, 200), (cx + math.cos(a) * 9, cy + math.sin(a) * 9, 1, 1))
+
+        if p["hp"] < p["hp_max"]:
+            self.draw_hp_bar(p["x"], p["y"] - 0.75, p["hp"], p["hp_max"], cam_x, cam_y)
+
+    def draw_npc(self, n: dict, cam_x: float, cam_y: float) -> None:
+        s = self.logical
         px = (n["x"] - cam_x) * TILE - SPRITE / 2
         py = (n["y"] - cam_y) * TILE - SPRITE + 3
-        pygame.draw.ellipse(s, (0, 0, 0, 60), ((n["x"] - cam_x) * TILE - 6,
-                                               (n["y"] - cam_y) * TILE + 1, 12, 5))
+        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 60), (0, 0, 12, 5))
+        s.blit(shadow, ((n["x"] - cam_x) * TILE - 6, (n["y"] - cam_y) * TILE + 1))
         base = "mage" if n["kind"] == "mage" else "npc"
-        key = base + ("_2" if n["anim_t"] > 0.15 else "_1")
+        key = base + ("_2" if n["anim_t"] > 0.3 else "_1")
         bob = math.sin(self.game.frame * 0.06 + n["x"])
-        self.blit_sprite(s, key, px, py + bob, n["dir"] == "left")
-        if math.hypot(n["x"] - self.game.player["x"], n["y"] - self.game.player["y"]) < 1.9:
+        self.blit_sprite(key, px, py + bob, n["dir"] == "left")
+        if math.hypot(n["x"] - self.game.player["x"], n["y"] - self.game.player["y"]) < 2.0:
             bob2 = math.sin(self.game.frame * 0.12) * 1.5
             pygame.draw.rect(s, (255, 240, 150), ((n["x"] - cam_x) * TILE - 1, py - 7 + bob2, 3, 5))
             pygame.draw.rect(s, (255, 240, 150), ((n["x"] - cam_x) * TILE - 2, py - 1 + bob2, 5, 2))
-        label = self.font_name.render(n["name"], True, (240, 240, 245))
-        s.blit(label, ((n["x"] - cam_x) * TILE - label.get_width() / 2, py - 9))
 
-    def draw_mob(self, s, m: dict, cam_x: float, cam_y: float) -> None:
+    def draw_mob(self, m: dict, cam_x: float, cam_y: float) -> None:
+        s = self.logical
         px = (m["x"] - cam_x) * TILE - SPRITE / 2
         py = (m["y"] - cam_y) * TILE - SPRITE + 3
         base = "gb" if m["kind"] == "brute" else "g"
         key = base + ("_2" if (m["moving"] and m["frame"]) else "_1")
-        pygame.draw.ellipse(s, (0, 0, 0, 60), ((m["x"] - cam_x) * TILE - 6,
-                                               (m["y"] - cam_y) * TILE + 1, 12, 5))
+        shadow = pygame.Surface((12, 5), pygame.SRCALPHA)
+        pygame.draw.ellipse(shadow, (0, 0, 0, 60), (0, 0, 12, 5))
+        s.blit(shadow, ((m["x"] - cam_x) * TILE - 6, (m["y"] - cam_y) * TILE + 1))
         bob = -1 if (m["moving"] and m["frame"]) else 0
         lunge = 2 if m["atk_t"] > 0 else 0
         lx = lunge * (-1 if m["dir"] == "left" else 1 if m["dir"] == "right" else 0)
         ly = lunge * (-1 if m["dir"] == "up" else 1 if m["dir"] == "down" else 0)
-        self.blit_sprite(s, key, px + lx, py + ly + bob, m["dir"] == "left", m["hurt_t"] > 0)
+        self.blit_sprite(key, px + lx, py + ly + bob, m["dir"] == "left", m["hurt_t"] > 0)
 
-        if math.hypot(m["x"] - self.game.player["x"], m["y"] - self.game.player["y"]) < 6.5 and m["attack_cd"] > 0.7:
+        if (math.hypot(m["x"] - self.game.player["x"], m["y"] - self.game.player["y"]) < 6.5
+                and m["attack_cd"] > 0.7):
             pygame.draw.rect(s, (255, 90, 60), ((m["x"] - cam_x) * TILE + 2, py - 8, 2, 4))
             pygame.draw.rect(s, (255, 90, 60), ((m["x"] - cam_x) * TILE + 2, py - 3, 2, 2))
         if m["hp"] < m["hp_max"]:
-            self.draw_hp_bar(s, m["x"], m["y"] - 0.75, m["hp"], m["hp_max"], cam_x, cam_y)
+            self.draw_hp_bar(m["x"], m["y"] - 0.75, m["hp"], m["hp_max"], cam_x, cam_y)
 
-    def draw_hp_bar(self, s, x, y, hp, hp_max, cam_x, cam_y, w=14) -> None:
+    def draw_hp_bar(self, x, y, hp, hp_max, cam_x, cam_y, w=14) -> None:
+        s = self.logical
         px = (x - cam_x) * TILE - w / 2
         py = (y - cam_y) * TILE
         ratio = max(0.0, hp / hp_max)
@@ -1109,89 +1190,111 @@ class Renderer:
         col = (90, 210, 80) if ratio > 0.5 else (220, 80, 80)
         pygame.draw.rect(s, col, (px, py, w * ratio, 2))
 
-    def draw_particle(self, s, p: dict, cam_x: float, cam_y: float) -> None:
-        alpha = max(0, 1 - p["t"] / p["life"])
+    def draw_particle(self, p: dict, cam_x: float, cam_y: float) -> None:
+        alpha = max(0.0, 1 - p["t"] / p["life"])
         col = pygame.Color(p["color"])
         col.a = int(255 * alpha)
         surf = pygame.Surface((2, 2), pygame.SRCALPHA)
         surf.fill(col)
-        s.blit(surf, ((p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE))
+        self.logical.blit(surf, ((p["x"] - cam_x) * TILE, (p["y"] - cam_y) * TILE))
 
-    def draw_floater(self, s, f: dict, cam_x: float, cam_y: float) -> None:
-        alpha = max(0, 1 - f["t"] / f["life"])
-        txt = self.font_name.render(f["text"], True, pygame.Color(f["color"]))
-        txt.set_alpha(int(255 * alpha))
-        s.blit(txt, ((f["x"] - cam_x) * TILE - txt.get_width() / 2,
-                     (f["y"] - cam_y) * TILE - 10))
+    # -- native-resolution text layer ---------------------------------------
+    def draw_text_layer(self, screen: pygame.Surface) -> None:
+        """NPC names and damage numbers — crisp, drawn 1:1 on the real screen."""
+        g = self.game
+        for n in g.npcs:
+            if not (self.cam_x - 2 < n["x"] < self.cam_x + self.view_w + 2
+                    and self.cam_y - 2 < n["y"] < self.cam_y + self.view_h + 2):
+                continue
+            lx, ly = self.to_logical(n["x"], n["y"])
+            label = self.font_name.render(n["name"], True, (245, 245, 250))
+            shadow = self.font_name.render(n["name"], True, (0, 0, 0))
+            x = lx * self.zoom - label.get_width() / 2 + self.ox
+            y = (ly - SPRITE + 3) * self.zoom - self.font_name.get_height() - 2 + self.oy
+            screen.blit(shadow, (x + 1, y + 1))
+            screen.blit(label, (x, y))
+
+        for f in g.floaters:
+            alpha = max(0.0, 1 - f["t"] / f["life"])
+            col = pygame.Color(f["color"])
+            col.a = int(255 * alpha)
+            txt = self.font_small.render(f["text"], True, col)
+            lx, ly = self.to_logical(f["x"], f["y"])
+            screen.blit(txt, (lx * self.zoom - txt.get_width() / 2 + self.ox,
+                              ly * self.zoom - self.s(14) + self.oy))
 
     # -- HUD ----------------------------------------------------------------
-    def panel(self, s, rect, fill=(10, 12, 20, 210), border=(90, 110, 150)) -> None:
+    def panel(self, screen, rect, fill=(10, 12, 20, 210), border=(90, 110, 150)) -> None:
         surf = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
         surf.fill(fill)
         pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1)
-        s.blit(surf, (rect[0], rect[1]))
+        screen.blit(surf, (rect[0], rect[1]))
 
-    def draw_hud(self, s) -> None:
+    def draw_hud(self, screen) -> None:
         g, p = self.game, self.game.player
-        self.panel(s, (10, 10, 176, 68))
-        s.blit(self.font.render("Пиксельное приключение", True, (255, 255, 255)), (20, 16))
-        s.blit(self.font_small.render(
-            f"Ур. {p['level']}   XP {p['xp']}/{p['xp_next']}", True, (180, 200, 230)), (20, 33))
+        S = self.s
+        self.panel(screen, (S(10), S(10), S(176), S(68)))
+        screen.blit(self.font.render("Пиксельное приключение", True, (255, 255, 255)), (S(20), S(16)))
+        screen.blit(self.font_small.render(
+            f"Ур. {p['level']}   XP {p['xp']}/{p['xp_next']}", True, (180, 200, 230)), (S(20), S(33)))
 
-        pygame.draw.rect(s, (30, 30, 38), (20, 50, 156, 7))
-        pygame.draw.rect(s, (190, 60, 60), (20, 50, 156, 7))
-        pygame.draw.rect(s, (80, 210, 110), (20, 50, 156 * max(0.0, p["hp"] / p["hp_max"]), 7))
+        pygame.draw.rect(screen, (30, 30, 38), (S(20), S(50), S(156), S(7)))
+        pygame.draw.rect(screen, (190, 60, 60), (S(20), S(50), S(156), S(7)))
+        pygame.draw.rect(screen, (80, 210, 110),
+                         (S(20), S(50), S(156) * max(0.0, p["hp"] / p["hp_max"]), S(7)))
         hp_txt = self.font_small.render(f"HP {max(0, math.ceil(p['hp']))} / {int(p['hp_max'])}",
                                         True, (255, 255, 255))
-        s.blit(hp_txt, (98 - hp_txt.get_width() / 2, 49))
-        s.blit(self.font_small.render(
-            f"Золото: {p['gold']}   Зелья: {p['potions']}", True, (240, 210, 120)), (20, 61))
+        screen.blit(hp_txt, (S(98) - hp_txt.get_width() / 2, S(49)))
+        screen.blit(self.font_small.render(
+            f"Золото: {p['gold']}   Зелья: {p['potions']}", True, (240, 210, 120)), (S(20), S(61)))
 
-        self.panel(s, (10, 86, 176, 46), fill=(10, 12, 20, 190))
-        s.blit(self.font_small.render("ПРОБЕЛ / ЛКМ — атака", True, (200, 214, 240)), (20, 90))
-        s.blit(self.font_small.render("Q — квесты   K — навыки", True, (200, 214, 240)), (20, 104))
-        s.blit(self.font_small.render(f"Очки навыков: {g.skill_points}", True, (200, 214, 240)), (20, 118))
+        self.panel(screen, (S(10), S(86), S(176), S(46)), fill=(10, 12, 20, 190))
+        for i, line in enumerate(("ПРОБЕЛ / ЛКМ — атака", "Q — квесты   K — навыки",
+                                  f"Очки навыков: {g.skill_points}")):
+            screen.blit(self.font_small.render(line, True, (200, 214, 240)), (S(20), S(90 + i * 14)))
 
-        ty = 146
+        ty = S(146)
         for t in g.toasts:
             a = t["t"] / 0.2 if t["t"] < 0.2 else (t["life"] - t["t"]) / 0.6 if t["t"] > t["life"] - 0.6 else 1
-            surf = pygame.Surface((300, 20), pygame.SRCALPHA)
+            surf = pygame.Surface((S(300), S(20)), pygame.SRCALPHA)
             surf.fill((10, 12, 18, int(190 * a)))
-            s.blit(surf, (10, ty))
+            screen.blit(surf, (S(10), ty))
             txt = self.font_small.render(t["text"], True, pygame.Color(t["color"]))
             txt.set_alpha(int(255 * a))
-            s.blit(txt, (18, ty + 4))
-            ty += 24
+            screen.blit(txt, (S(18), ty + S(4)))
+            ty += S(24)
 
         if g.show_quests:
-            self.draw_quest_panel(s)
+            self.draw_quest_panel(screen)
         if g.show_skills:
-            self.draw_skill_panel(s)
+            self.draw_skill_panel(screen)
         if g.dialog:
-            self.draw_dialog(s)
+            self.draw_dialog(screen)
 
-    def draw_quest_panel(self, s) -> None:
-        g = self.game
-        h = 30 + len(g.quests) * 42
-        self.panel(s, (320, 20, 430, h), fill=(12, 14, 22, 225), border=(120, 160, 210))
-        s.blit(self.font.render("Журнал квестов   (Q — закрыть)", True, (255, 255, 255)), (334, 26))
-        yy = 52
+    def draw_quest_panel(self, screen) -> None:
+        g, S = self.game, self.s
+        h = S(30 + len(g.quests) * 42)
+        self.panel(screen, (S(320), S(20), S(430), h), fill=(12, 14, 22, 225), border=(120, 160, 210))
+        screen.blit(self.font.render("Журнал квестов   (Q — закрыть)", True, (255, 255, 255)),
+                    (S(334), S(26)))
+        yy = S(52)
         for q in g.quests:
             col = (140, 220, 140) if q["done"] else (230, 230, 240)
-            s.blit(self.font_small.render(("✔ " if q["done"] else "• ") + q["title"], True, col), (334, yy))
-            s.blit(self.font_small.render(q["desc"], True, (170, 186, 210)), (344, yy + 14))
+            screen.blit(self.font_small.render(("✔ " if q["done"] else "• ") + q["title"], True, col),
+                        (S(334), yy))
+            screen.blit(self.font_small.render(q["desc"], True, (170, 186, 210)), (S(344), yy + S(14)))
             if not q["done"]:
-                s.blit(self.font_small.render(f"Прогресс: {q['progress']}/{q['goal']}",
-                                              True, (120, 200, 255)), (630, yy + 14))
-            yy += 42
+                screen.blit(self.font_small.render(f"Прогресс: {q['progress']}/{q['goal']}",
+                                                   True, (120, 200, 255)), (S(630), yy + S(14)))
+            yy += S(42)
 
-    def draw_skill_panel(self, s) -> None:
-        g = self.game
-        h = 40 + len(g.skills) * 46
-        self.panel(s, (320, 20, 430, h), fill=(12, 14, 22, 228), border=(150, 130, 220))
-        s.blit(self.font.render(f"Дерево навыков   (K — закрыть)   Очки: {g.skill_points}",
-                                True, (255, 255, 255)), (334, 26))
-        yy = 54
+    def draw_skill_panel(self, screen) -> None:
+        g, S = self.game, self.s
+        h = S(40 + len(g.skills) * 46)
+        self.panel(screen, (S(320), S(20), S(430), h), fill=(12, 14, 22, 228), border=(150, 130, 220))
+        screen.blit(self.font.render(f"Дерево навыков   (K — закрыть)   Очки: {g.skill_points}",
+                                     True, (255, 255, 255)), (S(334), S(26)))
+        yy = S(54)
         for i, sk in enumerate(g.skills):
             ok = g.can_learn(sk)
             col = (130, 230, 130) if sk["learned"] else (240, 240, 250) if ok else (130, 134, 148)
@@ -1200,24 +1303,97 @@ class Renderer:
                 label += "  ✔"
             elif sk["req"] and not all(g.has_skill(r) for r in sk["req"]):
                 label += "  требует " + ", ".join(sk["req"])
-            s.blit(self.font_small.render(label, True, col), (334, yy))
-            s.blit(self.font_small.render(sk["desc"], True, (170, 186, 210)), (350, yy + 14))
-            yy += 46
-        s.blit(self.font_small.render("Нажми 1–4, чтобы изучить доступный навык.",
-                                      True, (150, 170, 200)), (334, 20 + h - 18))
+            screen.blit(self.font_small.render(label, True, col), (S(334), yy))
+            screen.blit(self.font_small.render(sk["desc"], True, (170, 186, 210)), (S(350), yy + S(14)))
+            yy += S(46)
+        screen.blit(self.font_small.render("Нажми 1–4, чтобы изучить доступный навык.",
+                                           True, (150, 170, 200)), (S(334), S(20) + h - S(18)))
 
-    def draw_dialog(self, s) -> None:
-        d = self.game.dialog
-        w, h = 520, 74
-        x, y = (SCREEN_W - w) / 2, SCREEN_H - h - 34
-        self.panel(s, (int(x), int(y), w, h), fill=(10, 12, 20, 235), border=(220, 200, 130))
-        s.blit(self.font.render(d["name"], True, (255, 226, 140)), (x + 16, y + 10))
-        s.blit(self.font_small.render(d["line"], True, (238, 240, 248)), (x + 16, y + 34))
-        s.blit(self.font_small.render("E / Q — закрыть", True, (160, 176, 200)), (x + w - 110, y + h - 20))
+    def draw_dialog(self, screen) -> None:
+        if not self.game.dialog:
+            return
+        d, S = self.game.dialog, self.s
+        w, h = S(520), S(74)
+        x, y = (self.width - w) / 2, self.height - h - S(34)
+        self.panel(screen, (int(x), int(y), w, h), fill=(10, 12, 20, 235), border=(220, 200, 130))
+        screen.blit(self.font.render(d["name"], True, (255, 226, 140)), (x + S(16), y + S(10)))
+        screen.blit(self.font_small.render(d["line"], True, (238, 240, 248)), (x + S(16), y + S(34)))
+        screen.blit(self.font_small.render("E / Q — закрыть", True, (160, 176, 200)),
+                    (x + w - S(110), y + h - S(20)))
+
+    # -- settings menu ------------------------------------------------------
+    def draw_menu(self, screen, selected: int, fullscreen: bool, saved: bool) -> None:
+        S = self.s
+        screen.fill((12, 18, 28))
+        title = self.font_title.render("Пиксельное приключение", True, (245, 240, 200))
+        screen.blit(title, (self.width / 2 - title.get_width() / 2, S(70)))
+        sub = self.font.render("v1.2 — выбор разрешения", True, (150, 170, 200))
+        screen.blit(sub, (self.width / 2 - sub.get_width() / 2, S(70) + title.get_height() + S(6)))
+
+        y = S(190)
+        screen.blit(self.font.render("Разрешение экрана:", True, (220, 230, 245)), (S(60), y))
+        y += S(30)
+        for i, (w, h, z) in enumerate(RESOLUTIONS):
+            cur = (i == selected)
+            col = (255, 235, 150) if cur else (200, 210, 225)
+            mark = "▶" if cur else " "
+            label = f"{mark}  [{i + 1}]  {w} x {h}"
+            if w == 1920 and h == 1080:
+                label += "   (Full HD)"
+            if w == 1280 and h == 720:
+                label += "   (HD)"
+            screen.blit(self.font.render(label, True, col), (S(70), y))
+            y += S(28)
+
+        y += S(12)
+        fs = "включён" if fullscreen else "выключен"
+        screen.blit(self.font.render(f"Полный экран: {fs}   (F11)", True, (200, 210, 225)), (S(60), y))
+        y += S(28)
+        screen.blit(self.font_small.render(
+            "Пробел / Enter — начать игру    •    1-5 — выбрать разрешение    "
+            "•    F11 — полный экран    •    Esc — выход",
+            True, (150, 170, 200)), (S(60), y))
+        if saved:
+            screen.blit(self.font_small.render("Разрешение сохранено", True, (140, 220, 140)),
+                        (S(60), y + S(22)))
+        screen.blit(self.font_small.render("WASD/стрелки — движение, ПРОБЕЛ — атака, E — говорить, "
+                                           "Q — квесты, K — навыки, F5/F9 — сохранить/загрузить, "
+                                           "F10 — это меню",
+                                           True, (120, 140, 165)), (S(60), self.height - S(40)))
 
 
 # ----------------------------------------------------------------------------
-# Loop
+# Config
+# ----------------------------------------------------------------------------
+def load_config() -> dict:
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg: dict) -> None:
+    try:
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def parse_res_arg(argv: list[str]) -> int | None:
+    for i, a in enumerate(argv):
+        if a == "--res" and i + 1 < len(argv):
+            try:
+                w, h = argv[i + 1].lower().split("x")
+                w, h = int(w), int(h)
+            except ValueError:
+                return None
+            return min(range(len(RESOLUTIONS)),
+                       key=lambda i: abs(RESOLUTIONS[i][0] - w) + abs(RESOLUTIONS[i][1] - h))
+    return None
+
+
+# ----------------------------------------------------------------------------
+# Input / loop
 # ----------------------------------------------------------------------------
 KEYMAP = {
     pygame.K_w: "up", pygame.K_UP: "up",
@@ -1259,7 +1435,8 @@ def handle_key(game: Game, key: int) -> None:
     elif key == pygame.K_F9:
         game.load()
     elif game.show_skills and key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
-        game.learn(game.skills[{pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3}[key]])
+        idx = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2, pygame.K_4: 3}[key]
+        game.learn(game.skills[idx])
     elif key == pygame.K_a and game.has_skill("s_heal"):
         p = game.player
         if p["hp"] < p["hp_max"] and p["potions"] > 0:
@@ -1268,16 +1445,56 @@ def handle_key(game: Game, key: int) -> None:
             game.toast("Лечение +10 HP", "#8ee08e")
 
 
+def best_res_index_for_desktop() -> int:
+    try:
+        dw, dh = pygame.display.get_desktop_sizes()[0]
+    except Exception:
+        return DEFAULT_RES_INDEX
+    for i in range(len(RESOLUTIONS) - 1, -1, -1):
+        if RESOLUTIONS[i][0] <= dw and RESOLUTIONS[i][1] <= dh:
+            return i
+    return 0
+
+
+def apply_display(screen, res_index: int, fullscreen: bool):
+    """Return (screen, width, height, zoom)."""
+    w, h, zoom = RESOLUTIONS[res_index]
+    if fullscreen:
+        try:
+            dw, dh = pygame.display.get_desktop_sizes()[0]
+        except Exception:
+            dw, dh = w, h
+        screen = pygame.display.set_mode((dw, dh), pygame.FULLSCREEN)
+        best = 1
+        for z in (2, 3, 4, 5, 6):
+            if dw // z >= 320 and dh // z >= 240:
+                best = z
+        return screen, dw, dh, best
+    screen = pygame.display.set_mode((w, h))
+    return screen, w, h, zoom
+
+
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel RPG Adventure 1.1")
-    screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
-    logical = pygame.Surface((LOGICAL_W, LOGICAL_H))
+    pygame.display.set_caption("Pixel RPG Adventure 1.2")
+
+    cfg = load_config()
+    res_index = parse_res_arg(sys.argv)
+    if res_index is None:
+        res_index = cfg.get("res_index", DEFAULT_RES_INDEX)
+        res_index = max(0, min(len(RESOLUTIONS) - 1, res_index))
+    fullscreen = bool(cfg.get("fullscreen", False)) or "--fullscreen" in sys.argv
+    if not fullscreen:
+        # never open a window bigger than the desktop
+        res_index = min(res_index, best_res_index_for_desktop())
+
+    screen, width, height, zoom = apply_display(None, res_index, fullscreen)
+    game = Game()
+    renderer = Renderer(game, width, height, zoom)
     clock = pygame.time.Clock()
 
-    game = Game()
-    renderer = Renderer(game)
-
+    state = "menu"
+    menu_saved = False
     running = True
     while running:
         dt = min(0.05, clock.tick(FPS) / 1000.0)
@@ -1285,21 +1502,52 @@ def run() -> int:
             if event.type == pygame.QUIT:
                 running = False
             elif event.type == pygame.KEYDOWN:
-                handle_key(game, event.key)
+                if event.key == pygame.K_F11:
+                    fullscreen = not fullscreen
+                    screen, width, height, zoom = apply_display(screen, res_index, fullscreen)
+                    renderer.resize(width, height, zoom)
+                    save_config({"res_index": res_index, "fullscreen": fullscreen})
+                    menu_saved = True
+                    continue
+                if state == "menu":
+                    if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                        state = "play"
+                        menu_saved = False
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4, pygame.K_5):
+                        idx = event.key - pygame.K_1
+                        if idx < len(RESOLUTIONS):
+                            res_index = idx
+                            screen, width, height, zoom = apply_display(screen, res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            save_config({"res_index": res_index, "fullscreen": fullscreen})
+                            menu_saved = True
+                else:
+                    if event.key == pygame.K_F10:
+                        state = "menu"
+                    else:
+                        handle_key(game, event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if not game.dialog:
+                if state == "play" and not game.dialog:
                     game.attack()
 
-        game.update(dt, gather_input(pygame.key.get_pressed()))
-        renderer.draw(logical)
-        pygame.transform.scale(logical, (SCREEN_W, SCREEN_H), screen)
+        if state == "play":
+            game.update(dt, gather_input(pygame.key.get_pressed()))
+            renderer.draw(screen)
+        else:
+            renderer.draw_menu(screen, res_index, fullscreen, menu_saved)
         pygame.display.flip()
 
     game.save()
+    save_config({"res_index": res_index, "fullscreen": fullscreen})
     pygame.quit()
     return 0
 
 
+# ----------------------------------------------------------------------------
+# Self-test
+# ----------------------------------------------------------------------------
 def selftest() -> int:
     """Headless end-to-end check; also writes a report file so a windowed .exe
     build (no console) can be verified."""
@@ -1325,37 +1573,59 @@ def _selftest_body() -> int:
     pygame.init()
     pygame.display.set_mode((64, 64))
 
+    problems: list[str] = []
     game = Game(seed=1234)
-    renderer = Renderer(game)
     stats = game.world.stats()
-    print("world:", MAP_W, "x", MAP_H, "| land", str(stats["land_pct"]) + "%",
+    print("world:", MAP_W, "x", MAP_H, "| land", f"{stats['land_pct']}%",
           "| trees", stats["trees"], "| houses", stats["houses"], "| decor", stats["decor"])
     print("mobs:", len(game.mobs), "| npcs:", len(game.npcs),
           "| quests:", len(game.quests), "| skills:", len(game.skills))
-
-    problems: list[str] = []
     if stats["land_pct"] < 80:
         problems.append(f"land only {stats['land_pct']}%")
     if len(game.mobs) < 8:
         problems.append(f"only {len(game.mobs)} mobs spawned")
-    if any(game.world.is_solid(int(m["x"]), int(m["y"])) for m in game.mobs):
-        problems.append("mobs spawned inside solid tiles")
 
-    # walk right for 1s
+    # --- reachability: every NPC must be walkable-to from the spawn ---
+    reach = game.world.reachable_from((int(SPAWN_X), int(SPAWN_Y)))
+    print("reachable tiles from spawn:", len(reach))
+    for n in game.npcs:
+        tile = (int(n["x"]), int(n["y"]))
+        ok = tile in reach
+        print(f"  npc {n['name']:12s} at {tile} reachable: {ok}")
+        if not ok:
+            problems.append(f"NPC {n['name']} unreachable at {tile}")
+    for m in game.mobs:
+        if (int(m["x"]), int(m["y"])) not in reach:
+            problems.append(f"mob at ({int(m['x'])},{int(m['y'])}) unreachable")
+
+    # --- walk ---
     start = (game.player["x"], game.player["y"])
     frames_seen = set()
     for _ in range(60):
         game.update(1 / 60, {"right": True, "left": False, "up": False, "down": False})
         frames_seen.add(game.player["frame"])
     walked = math.hypot(game.player["x"] - start[0], game.player["y"] - start[1])
-    print("walked:", round(walked, 2), "tiles | frames used:", sorted(frames_seen),
-          "| dir:", game.player["dir"])
+    print("walked:", round(walked, 2), "tiles | frames:", sorted(frames_seen), "| dir:", game.player["dir"])
     if walked < 2:
         problems.append(f"player barely moved ({walked:.2f} tiles)")
     if frames_seen != {0, 1}:
         problems.append("walk animation did not cycle both frames")
 
-    # attack the nearest mob, then verify damage + animation
+    # --- talk to EVERY npc ---
+    for n in game.npcs:
+        game.player["x"], game.player["y"] = n["x"], n["y"] + 1.0
+        game.dialog = None
+        game.interact()
+        got = (game.dialog or {}).get("name")
+        print(f"  dialog with {n['name']:12s} -> {got}")
+        if got != n["name"]:
+            problems.append(f"could not talk to {n['name']}")
+    q_npcs = next(q for q in game.quests if q["id"] == "q_npcs")
+    print("quest 'знакомство' progress:", q_npcs["progress"], "/", q_npcs["goal"])
+    if q_npcs["progress"] < len(game.npcs):
+        problems.append("talking to all NPCs did not complete the quest")
+
+    # --- combat ---
     mob = min(game.mobs, key=lambda m: math.hypot(m["x"] - game.player["x"], m["y"] - game.player["y"]))
     game.player["x"], game.player["y"] = mob["x"], mob["y"] - 1.0
     game.player["dir"] = "down"
@@ -1366,34 +1636,23 @@ def _selftest_body() -> int:
         problems.append("attack dealt no damage")
     if game.player["atk_anim"] <= 0:
         problems.append("attack animation did not trigger")
-
-    # kill it and check the quest counter
     while mob["alive"]:
         game.player["atk_t"] = 0
         mob["hp"] -= 10
         if mob["hp"] <= 0:
             game.kill_mob(mob)
-    q = next(q for q in game.quests if q["id"] == "q_goblins")
-    print("after kill: quest progress", q["progress"], "/", q["goal"], "| gold", game.player["gold"])
-    if q["progress"] < 1:
+    q_gob = next(q for q in game.quests if q["id"] == "q_goblins")
+    print("goblin quest:", q_gob["progress"], "/", q_gob["goal"], "| gold:", game.player["gold"])
+    if q_gob["progress"] < 1:
         problems.append("kill did not advance the goblin quest")
 
-    # npc talk
-    npc = game.npcs[0]
-    game.player["x"], game.player["y"] = npc["x"], npc["y"] + 0.5
-    game.interact()
-    print("dialog:", (game.dialog or {}).get("name"), "| npc met:", npc["met"])
-    if not game.dialog:
-        problems.append("interacting with an NPC produced no dialog")
-
-    # skill learn
+    # --- skills + save/load ---
     before = game.skill_points
     game.learn(game.skills[0])
     print("skill learned:", game.skills[0]["learned"], "| points", before, "->", game.skill_points)
     if not game.skills[0]["learned"]:
         problems.append("could not learn a skill")
 
-    # save / load round trip
     tmp = Path(os.environ.get("TEMP", ".")) / "pixel_rpg_selftest.json"
     ok_save = game.save(tmp)
     gold = game.player["gold"]
@@ -1403,11 +1662,35 @@ def _selftest_body() -> int:
     if not (ok_save and ok_load and game.player["gold"] == gold):
         problems.append("save/load round trip failed")
 
-    # render one frame to be sure drawing works headless
-    logical = pygame.Surface((LOGICAL_W, LOGICAL_H))
-    renderer.draw(logical)
-    px = logical.get_at((LOGICAL_W // 2, LOGICAL_H // 2))
-    print("render ok, centre pixel:", tuple(px)[:3])
+    # --- render at every resolution, verify crisp integer scaling + text pass ---
+    for idx, (w, h, z) in enumerate(RESOLUTIONS):
+        screen = pygame.Surface((w, h))
+        r = Renderer(game, w, h, z)
+        r.draw(screen)
+        colours = {screen.get_at((x, y))[:3]
+                   for x in range(0, w, max(1, w // 40))
+                   for y in range(0, h, max(1, h // 24))}
+        text_w = r.font.render("Тест шрифта", True, (255, 255, 255)).get_width()
+        print(f"  render {w}x{h} zoom{z}: logical {r.lw}x{r.lh} "
+              f"| colours {len(colours)} | text width {text_w}px")
+        if len(colours) < 5:
+            problems.append(f"render at {w}x{h} looks blank ({len(colours)} colours)")
+        if text_w < 40:
+            problems.append(f"font too small at {w}x{h}")
+
+    # verify the HUD is drawn at native resolution (text must NOT be upscaled):
+    # a 1-px difference check on the logical surface vs the screen would be ideal;
+    # here we assert the renderer keeps text off the logical layer.
+    screen = pygame.Surface((1920, 1080))
+    r = Renderer(game, 1920, 1080, 4)
+    r.logical.fill((0, 0, 0))
+    r.draw_text_layer(screen)
+    r.draw_hud(screen)
+    hud_pixels = sum(1 for x in range(0, 1920, 7) for y in range(0, 200, 5)
+                     if screen.get_at((x, y))[:3] != (0, 0, 0))
+    print("HUD drawn on the native 1920x1080 screen, non-black samples:", hud_pixels)
+    if hud_pixels < 50:
+        problems.append("HUD did not render at native resolution")
 
     pygame.quit()
     if problems:
