@@ -7,98 +7,126 @@
 <script>window.p5_disableFriendlyErrors = true;</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
 <style>
-  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#111; }
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#0a1a2a; }
   canvas { display:block; image-rendering: pixelated; }
   #hint {
     position:fixed; left:0; right:0; bottom:0; text-align:center;
-    font:12px/1.6 "Courier New", monospace; color:#cfe8ff;
-    background:rgba(0,0,0,.55); padding:4px 0; pointer-events:none;
+    font:12px/1.6 "Courier New", monospace; color:#fff;
+    background:rgba(5,15,25,.68); padding:4px 0; pointer-events:none; text-shadow:1px 1px 0 #000;
   }
 </style>
 </head>
 <body>
-<div id="hint">WASD / стрелки — движение &nbsp;•&nbsp; E — говорить / атаковать &nbsp;•&nbsp; Q — журнал квестов &nbsp;•&nbsp; K — дерево навыков</div>
+<div id="hint">WASD / стрелки — движение &nbsp;•&nbsp; E — говорить &nbsp;•&nbsp; ПРОБЕЛ / ЛКМ — атака &nbsp;•&nbsp; Q — квесты &nbsp;•&nbsp; K — навыки</div>
 <script>
 "use strict";
 
 /* ============================================================
-   КОНФИГ
-   Мир задаётся В ТАЙЛАХ. Тайл = 16 px, зумим x3 => 48 px на экране.
+   КОНФИГ — БОЛЬШОЙ МИР
+   Мир задаётся в тайлах. Тайл = 16px мировых, зум x3 => 48px на экране.
    ============================================================ */
-const TILE      = 16;     // размер тайла в пикселях мира
-const ZOOM      = 3;      // масштаб отрисовки
-const VIEW_W    = 26;     // ширина вида в тайлах
-const VIEW_H    = 18;     // высота вида в тайлах
-const MAP_W     = 64;
-const MAP_H     = 48;
-const SPRITE    = 16;     // спрайты персонажей 16x16
+const TILE      = 16;
+const ZOOM      = 3;
+const VIEW_W    = 26;     // видимая ширина в тайлах
+const VIEW_H    = 18;
+const MAP_W     = 100;    // мир 100x64 тайлов — большой, есть где ходить
+const MAP_H     = 64;
+const SPRITE    = 16;
 
+// Легенда тайлов: 0 void, 1 deep, 2 water, 3 sand, 4 grass, 5 grass2,
+// 6 forest, 7 stone, 8 path, 9 floor(дом), 10 crops, 11 flowers
 const COLORS = {
-  void:   [0,0,0],
-  deep:   [24,60,120],
-  water:  [46,110,190],
-  sand:   [214,196,141],
-  grass:  [86,152,74],
-  grass2: [72,136,64],
-  forest: [38,92,52],
-  stone:  [126,126,134],
-  stone2: [104,104,112],
-  path:   [168,148,110],
-  roof:   [156,60,52],
-  roof2:  [120,44,38],
-  wood:   [122,84,52],
-  wood2:  [92,62,38],
-  door:   [72,48,28]
+  void:  [10, 22, 32],   // «ночное море» за краем карты — не чёрный
+  deep:  [22, 60, 118],
+  water: [46, 110, 190],
+  sand:  [216, 200, 146],
+  grass: [86, 152, 74],
+  grass2:[70, 134, 62],
+  forest:[36, 92, 52],
+  stone: [126, 126, 134],
+  stone2:[104, 104, 112],
+  path:  [170, 150, 112],
+  floor: [132, 98, 62],
+  floor2:[116, 84, 52],
+  roof:  [158, 62, 52],
+  roof2: [122, 46, 40],
+  wood:  [122, 84, 52],
+  wood2: [92, 62, 38],
+  door:  [72, 48, 28],
+  crops: [148, 168, 74],
+  flowers:[232, 190, 130]
 };
 
 /* ============================================================
-   СПРАЙТЫ — рисуются символами, чтобы их было видно и править легко.
-   '.' прозрачно. Палитра на каждый спрайт.
+   СПРАЙТЫ (16x16). Символ -> цвет (см. PAL). '.' = прозрачно.
+   У каждого персонажа 2 кадра ходьбы.
    ============================================================ */
 const PAL = {
   '.': null,
-  'k': [22,20,26],      // контур / тёмный
-  'h': [58,38,24],      // волосы
-  'H': [96,66,40],      // волосы светлее
-  's': [232,186,148],   // кожа
-  'S': [206,158,120],   // кожа тень
-  'e': [30,26,32],      // глаза
-  'r': [176,54,46],     // рубаха игрока
-  'R': [214,86,64],     // рубаха свет
-  'b': [54,80,164],     // штаны
-  'B': [40,60,130],     // штаны тень
-  'n': [86,142,72],     // гоблин кожа
-  'N': [64,112,54],     // гоблин тень
-  'g': [198,54,48],     // глаза гоблина
-  'f': [212,178,120],   // ткань врага
-  'F': [178,142,92],
-  'm': [196,160,120],   // роба NPC
-  'M': [160,126,90],
-  'a': [222,196,110],   // акцент
-  'w': [244,244,248],   // белый
-  'v': [124,72,168]     // маг фиолетовый
+  'k': [24, 22, 28],      // контур
+  'h': [58, 38, 24],      // волосы
+  'H': [96, 66, 40],
+  's': [232, 186, 148],   // кожа
+  'S': [206, 158, 120],   // кожа-тень
+  'e': [30, 26, 32],      // глаза
+  'r': [176, 54, 46],     // рубаха
+  'R': [214, 86, 64],     // рубаха свет
+  'b': [54, 80, 164],     // штаны
+  'B': [40, 60, 130],
+  'n': [86, 142, 72],     // гоблин
+  'N': [64, 112, 54],
+  'g': [200, 56, 48],     // глаза гоблина
+  'y': [230, 210, 120],   // зубы/акцент
+  'f': [212, 178, 120],   // ткань гоблина
+  'F': [178, 142, 92],
+  'm': [196, 160, 120],   // роба NPC
+  'M': [160, 126, 90],
+  'a': [222, 196, 110],
+  'w': [244, 244, 248],
+  'v': [124, 72, 168],    // маг
+  'p': [216, 120, 120],   // меч/клинок
+  'q': [240, 240, 255]    // блик меча
 };
 
-// Игрок — 16x16, «вниз»
-const SPR_PLAYER_DOWN = [
+// ----- Игрок: вниз -----
+const SPR_P_DOWN_1 = [
   "................",
   ".....kkkkkk.....",
   "....khhhhhhk....",
   "...khhhhhhhhk...",
   "...khsssssshk...",
   "...khseeseesh...",
-  "...khssssssk....",
+  "...khsesssshk...",
   "....kssSSsk.....",
   "...kRRrrrrRRk...",
   "..kRrrrrrrrrRk..",
   "..kRrrrrrrrrRk..",
   "..ksrrrrrrrrsk..",
   "...kbbbbbbbbk...",
-  "...kbbbkbbbbk...",
-  "...kbbk.kbbk....",
-  "...kkk...kkk...."
+  "...kbbkbbbkbb...",
+  "...kkk...kkk....",
+  "................"
 ];
-const SPR_PLAYER_UP = [
+const SPR_P_DOWN_2 = [
+  "................",
+  ".....kkkkkk.....",
+  "....khhhhhhk....",
+  "...khhhhhhhhk...",
+  "...khsssssshk...",
+  "...khseeseesh...",
+  "...khsesssshk...",
+  "....kssSSsk.....",
+  "...kRRrrrrRRk...",
+  "..kRrrrrrrrrRk..",
+  "..kRrrrrrrrrRk..",
+  "..ksrrrrrrrrsk..",
+  "...kbbbbbbbbk...",
+  "....kbbkbbk.....",
+  "....kkk..kkk....",
+  "................"
+];
+// ----- Игрок: вверх -----
+const SPR_P_UP_1 = [
   "................",
   ".....kkkkkk.....",
   "....khhhhhhk....",
@@ -112,51 +140,143 @@ const SPR_PLAYER_UP = [
   "..kRrrrrrrrrRk..",
   "..ksrrrrrrrrsk..",
   "...kbbbbbbbbk...",
-  "...kbbbkbbbbk...",
-  "...kbbk.kbbk....",
-  "...kkk...kkk...."
+  "...kbbkbbbkbb...",
+  "...kkk...kkk....",
+  "................"
 ];
-const SPR_PLAYER_SIDE = [
+const SPR_P_UP_2 = [
+  "................",
+  ".....kkkkkk.....",
+  "....khhhhhhk....",
+  "...khhhhhhhhk...",
+  "...khhhhhhhhk...",
+  "...khhhhhhhhk...",
+  "...khhhhhhhhk...",
+  "....khHHHHhk....",
+  "...kRRrrrrRRk...",
+  "..kRrrrrrrrrRk..",
+  "..kRrrrrrrrrRk..",
+  "..ksrrrrrrrrsk..",
+  "...kbbbbbbbbk...",
+  "....kbbkbbk.....",
+  "....kkk..kkk....",
+  "................"
+];
+// ----- Игрок: бок -----
+const SPR_P_SIDE_1 = [
   "................",
   ".....kkkkkk.....",
   "....khhhhhhk....",
   "...khhhhhhhhk...",
   "...khhsssshsk...",
   "...khhseesshk...",
-  "...khhssssk.....",
+  "...khhssss k....",
   "....ksssSk......",
   "...kRRrrrRk.....",
   "..kRrrrrrrrk....",
   "..kRrrrrrrrk....",
-  "..ksrrrrrsk.....",
-  "...kbbbbbbk.....",
-  "...kbbbbbk......",
-  "...kbbk.kbk.....",
-  "...kkk...kk....."
+  "..ksrrrrrrsk....",
+  "...kbbbbbbbk....",
+  "...kbbkbbbk.....",
+  "...kkk..kkk.....",
+  "................"
+];
+const SPR_P_SIDE_2 = [
+  "................",
+  ".....kkkkkk.....",
+  "....khhhhhhk....",
+  "...khhhhhhhhk...",
+  "...khhsssshsk...",
+  "...khhseesshk...",
+  "...khhssss k....",
+  "....ksssSk......",
+  "...kRRrrrRk.....",
+  "..kRrrrrrrrk....",
+  "..kRrrrrrrrk....",
+  "..ksrrrrrrsk....",
+  "...kbbbbbbbk....",
+  "....kbbkbbk.....",
+  "....kkk..kkk....",
+  "................"
 ];
 
-// Гоблин-враг
-const SPR_ENEMY = [
+// ----- Гоблин: 2 кадра -----
+const SPR_G_1 = [
   "................",
   "................",
   "..k..........k..",
-  "..kk.nn.nnn.kk..",
-  "...knnnnnnnnk...",
+  "..kknn.nnnn.kk..",
   "..knnnnnnnnnnk..",
-  "..knggNNNggNnk..",
-  "..knnnNNNNnnnk..",
-  "..knnnkkkknnnk..",
+  "..knnnnnnnnnnk..",
+  "..knyggNggynnk..",
+  "..knnNNNNNNnnk..",
+  "..knnNkkkkNnnk..",
   "...knnnnnnnnk...",
   "..kffnnnnnnffk..",
-  "..kfknnnnnnkfk..",
+  "..kffnnnnnnffk..",
   "..kf.nnnnnn.fk..",
   "....knnkknnk....",
+  "...knnk..knnk...",
+  "...kkk....kkk..."
+];
+const SPR_G_2 = [
+  "................",
+  "................",
+  "..k..........k..",
+  "..kknn.nnnn.kk..",
+  "..knnnnnnnnnnk..",
+  "..knnnnnnnnnnk..",
+  "..knygNgggynnk..",
+  "..knnNNNNNNnnk..",
+  "..knnNkkkkNnnk..",
+  "...knnnnnnnnk...",
+  "..kffnnnnnnffk..",
+  "..kffnnnnnnffk..",
+  "..kf.nnnnnn.fk..",
   "....knn..nnk....",
-  "....kkk..kkk...."
+  "...kknnk.knnk...",
+  "...kkk.....kkk.."
+];
+// ----- Гоблин-здоровяк -----
+const SPR_G_BRUTE_1 = [
+  "................",
+  "................",
+  "..k..........k..",
+  "..kknnnnnnnn.kk.",
+  ".knnnnnnnnnnnnk.",
+  ".knnnnnnnnnnnnk.",
+  ".knnggNNNNggnnk.",
+  ".knnNNNNNNNNnnk.",
+  ".knnNNkkkkNNnnk.",
+  "..knnnnnnnnnnk..",
+  ".kffnnnnnnnnffk.",
+  ".kffnnnnnnnnffk.",
+  ".kf.nnnnnnnn.fk.",
+  "...knnnnnnnnk...",
+  "...kknnk.knnkk..",
+  "....kkk...kkk..."
+];
+const SPR_G_BRUTE_2 = [
+  "................",
+  "................",
+  "..k..........k..",
+  "..kknnnnnnnn.kk.",
+  ".knnnnnnnnnnnnk.",
+  ".knnnnnnnnnnnnk.",
+  ".knngNNNNggnnk..",
+  ".knnNNNNNNNNnnk.",
+  ".knnNNkkkkNNnnk.",
+  "..knnnnnnnnnnk..",
+  ".kffnnnnnnnnffk.",
+  ".kffnnnnnnnnffk.",
+  ".kf.nnnnnnnn.fk.",
+  "...knnnnnnnnk...",
+  "..kknnnk.knnkk..",
+  "..kkk.....kkkk.."
 ];
 
-// Дружелюбный NPC — крестьянин
-const SPR_NPC = [
+// ----- NPC крестьянин -----
+const SPR_NPC_1 = [
   "................",
   "................",
   ".....kkkkkk.....",
@@ -165,18 +285,35 @@ const SPR_NPC = [
   "...kassssssak...",
   "...kaseeseesak..",
   "...kassssssk....",
-  "...kmmmssmmk....",
+  "....kmmssmmk....",
   "..kmmmmmmmmmmk..",
   "..kmMmmmmmmMmk..",
   "..ksmmmmmmmmk...",
   "...kmmmmmmmmk...",
-  "...kMMMMMMMk....",
   "...kMMk.kMMk....",
-  "...kkk...kkk...."
+  "...kkk...kkk....",
+  "................"
 ];
-
-// NPC маг / старейшина
-const SPR_MAGE = [
+const SPR_NPC_2 = [
+  "................",
+  "................",
+  ".....kkkkkk.....",
+  "....kaaaaaak....",
+  "...kaaaaaaaak...",
+  "...kassssssak...",
+  "...kaseeseesak..",
+  "...kassssssk....",
+  "....kmmssmmk....",
+  "..kmmmmmmmmmmk..",
+  "..kmMmmmmmmMmk..",
+  "..ksmmmmmmmmk...",
+  "...kmmmmmmmmk...",
+  "....kMMkMMk.....",
+  "....kkk..kkk....",
+  "................"
+];
+// ----- Маг -----
+const SPR_MAGE_1 = [
   "................",
   "......kkkk......",
   ".....kvvvvk.....",
@@ -194,26 +331,43 @@ const SPR_MAGE = [
   "...kvvk.kvvk....",
   "...kkk...kkk...."
 ];
+const SPR_MAGE_2 = [
+  "................",
+  "......kkkk......",
+  ".....kvvvvk.....",
+  "....kvwwwwvk....",
+  "...kvwwwwwwvk...",
+  "...kvwsssswvk...",
+  "...kvsesseesk...",
+  "...kvvssssvk....",
+  "..kvvvssssvvk...",
+  "..kvvvvvvvvvk...",
+  "..kvavvvvvvak...",
+  "..kvvvvvvvvvk...",
+  "..kvvvvvvvvvk...",
+  "....kvvvvvk.....",
+  "....kvvkkvvk....",
+  "....kkk..kkk...."
+];
 
 /* ============================================================
-   ГЕНЕРАЦИЯ КАРТЫ: остров + озеро + лес + деревня + дороги
+   ГЕНЕРАЦИЯ МИРА — почти весь мир суша, чтобы было ГДЕ ХОДИТЬ
    ============================================================ */
-let map = [];      // 0 void,1 deep,2 water,3 sand,4 grass,5 grass2,6 forest,7 stone,8 path,9 floor
-let objects = [];  // деревья, дома, камни...
-let decor = [];
+let worldMap = [];   // 2D-массив тайлов
+let objects = [];    // деревья, дома
+let decor = [];      // цветы, кусты, фонари
 
-// --- простой value-noise ---
 function hash2(x, y) {
   let n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
   return n - Math.floor(n);
 }
-function smooth(t) { return t * t * (3 - 2 * t); }
+function smoothStep(t) { return t * t * (3 - 2 * t); }
 function valueNoise(x, y) {
   const xi = Math.floor(x), yi = Math.floor(y);
   const xf = x - xi, yf = y - yi;
   const a = hash2(xi, yi),     b = hash2(xi + 1, yi);
   const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
-  const u = smooth(xf), v = smooth(yf);
+  const u = smoothStep(xf), v = smoothStep(yf);
   return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
 }
 function fbm(x, y) {
@@ -222,79 +376,89 @@ function fbm(x, y) {
   return v;
 }
 
+function inBounds(x, y) { return x >= 0 && y >= 0 && x < MAP_W && y < MAP_H; }
+function objAt(x, y) { return objects.find(o => o.x === x && o.y === y); }
+function isSolid(x, y) {
+  if (!inBounds(x, y)) return true;
+  const o = objAt(x, y);
+  if (o && o.type !== 'sign') return true;
+  const t = worldMap[y][x];
+  return t === 0 || t === 1 || t === 2;   // море/глубина/озеро непроходимы
+}
+
 function generateMap() {
-  map = []; objects = []; decor = [];
+  worldMap = []; objects = []; decor = [];
+  // 1) Базовый террейн: почти всё — суша, noise создаёт холмы и редкие озёра
   for (let y = 0; y < MAP_H; y++) {
-    map[y] = [];
+    worldMap[y] = [];
     for (let x = 0; x < MAP_W; x++) {
-      // радиальный градиент делает остров
       const dx = (x - MAP_W / 2) / (MAP_W / 2);
       const dy = (y - MAP_H / 2) / (MAP_H / 2);
       const dist = Math.sqrt(dx * dx + dy * dy);
+      // лёгкий крен к краям: края — пляжи, центр — леса. void почти не бывает
       const n = fbm(x * 0.09, y * 0.09) * 0.55 + 0.45;
-      const land = n - dist * 0.85;
+      const land = n - dist * 0.16;
 
-      let t = 0; // void
-      if (land > 0.30) t = 4;        // трава
-      else if (land > 0.22) t = 3;   // песок
-      else if (land > 0.14) t = 2;   // вода
-      else if (land > 0.04) t = 1;   // глубина
-      map[y][x] = t;
+      let t;
+      if (land > 0.52)      t = 4;   // трава
+      else if (land > 0.42) t = 3;   // пляж
+      else if (land > 0.30) t = 2;   // редкие мелкие озёра
+      else if (land > 0.24) t = 1;
+      else                  t = 0;   // почти нигде
+      worldMap[y][x] = t;
     }
   }
 
-  // озеро в северо-западной части
-  carveBlob(14, 12, 5.5, 2);
-  // небольшой пруд на юго-востоке
-  carveBlob(48, 34, 4.0, 2);
+  // 2) Красивое озеро в центро-западе (непреодолимое, но обходимое)
+  carveBlob(28, 20, 6.5, 2);
+  // Лесные массивы на траве
+  scatterForest(0.10, 0.34, 6);
+  scatterForest(0.42, 0.55, 6);
 
-  // лесные массивы
-  scatterForest(0.10, 0.22, 6);
-  scatterForest(0.28, 0.36, 6);
+  // 3) Деревня в центре
+  const cx = 50, cy = 32;
+  for (let y = cy - 6; y <= cy + 6; y++)
+    for (let x = cx - 9; x <= cx + 9; x++)
+      if (inBounds(x, y) && worldMap[y][x] >= 3) worldMap[y][x] = 4;
 
-  // деревня в центре — расчищаем площадку
-  const cx = 32, cy = 24;
-  for (let y = cy - 5; y <= cy + 5; y++)
-    for (let x = cx - 7; x <= cx + 7; x++)
-      if (inBounds(x, y) && map[y][x] >= 3) map[y][x] = 4;
+  // дороги: главная — горизонталь, вертикаль, тропы наружу
+  for (let x = cx - 9; x <= cx + 9; x++) if (inBounds(x, cy)) worldMap[cy][x] = 8;
+  for (let y = cy - 6; y <= cy + 6; y++) if (inBounds(cx, y)) worldMap[y][cx] = 8;
+  for (let x = cx + 9; x < cx + 26; x++) if (inBounds(x, cy) && worldMap[cy][x] >= 3) worldMap[cy][x] = 8;
+  for (let x = cx - 26; x < cx - 9; x++) if (inBounds(x, cy) && worldMap[cy][x] >= 3) worldMap[cy][x] = 8;
+  for (let y = cy + 6; y < cy + 20; y++) if (inBounds(cx, y) && worldMap[cx][y] >= 3) worldMap[cx][y] = 8;
+  for (let y = cy - 20; y < cy - 6; y++) if (inBounds(cx, y) && worldMap[cx][y] >= 3) worldMap[cx][y] = 8;
 
-  // дороги: крест через деревню
-  for (let x = cx - 7; x <= cx + 7; x++) if (inBounds(x, cy)) map[cy][x] = 8;
-  for (let y = cy - 5; y <= cy + 5; y++) if (inBounds(cx, y)) map[y][cx] = 8;
-  // тропы наружу
-  for (let x = cx + 7; x < cx + 18; x++) if (inBounds(x, cy) && map[cy][x] >= 3) map[cy][x] = 8;
-  for (let y = cy + 5; y < cy + 15; y++) if (inBounds(cx, y) && map[cx][y] >= 3) map[cx][y] = 8;
+  // 4) Дома (8 штук — настоящая деревня)
+  const hL = [[-6,-4],[ 5,-4],[-6, 4],[ 5, 4],[-1,-4],[ 2,-4],[-1, 4],[ 2, 4]];
+  for (const [ox, oy] of hL) placeHouse(cx + ox, cy + oy);
 
-  // дома
-  placeHouse(cx - 4, cy - 3);
-  placeHouse(cx + 3, cy - 3);
-  placeHouse(cx - 4, cy + 3);
-  placeHouse(cx + 3, cy + 3);
-
-  // декоративная трава/кусты
-  for (let i = 0; i < 260; i++) {
-    const x = Math.floor(Math.random() * MAP_W);
-    const y = Math.floor(Math.random() * MAP_H);
-    if (map[y][x] === 4 && !objects.some(o => o.x === x && o.y === y)) {
-      decor.push({ x, y, type: Math.random() < 0.7 ? 'grass' : 'bush' });
-    }
+  // 5) Декор: цветы и кусты
+  for (let i = 0; i < 900; i++) {
+    const x = Math.floor(Math.random() * MAP_W), y = Math.floor(Math.random() * MAP_H);
+    if (worldMap[y][x] === 4 && !objAt(x, y)) decor.push({ x, y, type: Math.random() < 0.75 ? 'flower' : 'bush' });
   }
+  // поле пшеницы возле деревни
+  for (let y = cy + 8; y < cy + 12; y++)
+    for (let x = cx + 12; x < cx + 22; x++)
+      if (inBounds(x, y) && worldMap[y][x] === 4) worldMap[y][x] = 10;
 }
 
 function carveBlob(cx, cy, r, t) {
-  for (let y = Math.floor(cy - r); y <= cy + r; y++)
-    for (let x = Math.floor(cx - r); x <= cx + r; x++) {
-      if (!inBounds(x, y)) continue;
-      const d = Math.hypot(x - cx, y - cy);
-      if (d < r * (0.75 + hash2(x, y) * 0.5)) map[y][x] = t;
-    }
-  // берега вокруг
   for (let y = Math.floor(cy - r - 2); y <= cy + r + 2; y++)
     for (let x = Math.floor(cx - r - 2); x <= cx + r + 2; x++) {
       if (!inBounds(x, y)) continue;
-      if (map[y][x] === 4 || map[y][x] === 5) {
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < r * (0.78 + hash2(x, y) * 0.44)) worldMap[y][x] = t;
+    }
+  // песчаные берега вокруг озера
+  for (let y = Math.floor(cy - r - 3); y <= cy + r + 3; y++)
+    for (let x = Math.floor(cx - r - 3); x <= cx + r + 3; x++) {
+      if (!inBounds(x, y)) continue;
+      if (worldMap[y][x] === 4 || worldMap[y][x] === 5) {
+        outer:
         for (const [ox, oy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-          if (inBounds(x + ox, y + oy) && map[y + oy][x + ox] === 2) { map[y][x] = 3; break; }
+          if (inBounds(x + ox, y + oy) && worldMap[y + oy][x + ox] === 2) { worldMap[y][x] = 3; break outer; }
         }
       }
     }
@@ -303,9 +467,9 @@ function carveBlob(cx, cy, r, t) {
 function scatterForest(lo, hi, type) {
   for (let y = 0; y < MAP_H; y++)
     for (let x = 0; x < MAP_W; x++) {
-      if (map[y][x] !== 4) continue;
+      if (worldMap[y][x] !== 4) continue;
       const n = fbm(x * 0.16, y * 0.16);
-      if (n > lo && n < hi && Math.random() < 0.55) {
+      if (n > lo && n < hi && Math.random() < 0.62) {
         objects.push({ x, y, type: 'tree' });
       }
     }
@@ -314,36 +478,26 @@ function scatterForest(lo, hi, type) {
 function placeHouse(x, y) {
   for (let dy = -1; dy <= 1; dy++)
     for (let dx = -1; dx <= 1; dx++)
-      if (inBounds(x + dx, y + dy)) map[y + dy][x + dx] = 9;
+      if (inBounds(x + dx, y + dy)) worldMap[y + dy][x + dx] = 9;
   objects.push({ x, y, type: 'house' });
-}
-
-function inBounds(x, y) { return x >= 0 && y >= 0 && x < MAP_W && y < MAP_H; }
-function objAt(x, y) { return objects.find(o => o.x === x && o.y === y); }
-function isSolid(x, y) {
-  if (!inBounds(x, y)) return true;
-  const o = objAt(x, y);
-  if (o && o.type !== 'sign') return true;      // дом/дерево непроходимы
-  const t = map[y][x];
-  return t === 0 || t === 1 || t === 2;         // void/глубина/вода
+  decor.push({ x: x + 2, y: y + 2, type: 'lamp' });
 }
 
 /* ============================================================
-   ИГРОВЫЕ СУЩНОСТИ
-   Координаты — В ТАЙЛАХ (дробные для плавного движения).
+   СУЩНОСТИ
    ============================================================ */
 const player = {
-  x: 32.5, y: 26.5,
+  x: 50.5, y: 32.5,
   dir: 'down',
   moving: false,
-  animT: 0,
-  frame: 0,
-  speed: 5.0,          // тайлов в секунду
+  animT: 0, frame: 0,
+  speed: 5.2,
   hp: 30, hpMax: 30,
   mp: 10, mpMax: 10,
   level: 1, xp: 0, xpNext: 20,
-  gold: 0,
-  potions: 2
+  gold: 0, potions: 2,
+  atkT: 0, atkAnim: 0,
+  hurtT: 0
 };
 
 let mobs = [];
@@ -351,33 +505,30 @@ let npcs = [];
 let drops = [];
 let particles = [];
 let floaters = [];
+let corpses = [];
 
 function spawnMobs() {
   mobs = [];
-  const spots = [[18,30],[46,20],[52,38],[22,16],[40,42],[14,24],[56,28],[30,44]];
+  // точки спавна в разных частях большого мира
+  const spots = [[26,44],[70,22],[84,52],[34,16],[66,44],[20,26],[88,30],[50,52],[16,46],[78,54],[40,10],[60,56]];
   for (const [sx, sy] of spots) {
-    // ищем ближайшую проходимую клетку (спираль), если спот попал на воду/дерево
-    let placed = false;
     outer:
-    for (let r = 0; r <= 6 && !placed; r++) {
-      for (let dy = -r; dy <= r; dy++) {
+    for (let r = 0; r <= 7; r++)
+      for (let dy = -r; dy <= r; dy++)
         for (let dx = -r; dx <= r; dx++) {
           if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
           const x = sx + dx, y = sy + dy;
-          if (inBounds(x, y) && !isSolid(x, y) && !objAt(x, y)) {
-            mobs.push(makeMob(x, y, mobs.length % 3 === 2 ? 'brute' : 'goblin'));
-            placed = true;
+          if (inBounds(x, y) && !isSolid(x, y)) {
+            mobs.push(makeMob(x, y, mobs.length % 4 === 3 ? 'brute' : 'goblin'));
             break outer;
           }
         }
-      }
-    }
   }
 }
 
 function makeMob(x, y, kind) {
   const base = kind === 'brute'
-    ? { hpMax: 26, atk: 5, speed: 2.2, xp: 14, name: 'Гоблин-здоровяк' }
+    ? { hpMax: 30, atk: 6, speed: 2.3, xp: 16, name: 'Гоблин-здоровяк' }
     : { hpMax: 14, atk: 3, speed: 3.0, xp: 8,  name: 'Гоблин' };
   return {
     x, y, kind, name: base.name,
@@ -385,83 +536,72 @@ function makeMob(x, y, kind) {
     atk: base.atk, speed: base.speed, xp: base.xp,
     dir: 'down', moving: false, animT: 0, frame: 0,
     timer: 1 + Math.random() * 2,
-    attackCd: 0, hurtCd: 0, wander: { x, y },
+    attackCd: 0, hurtT: 0, atkT: 0,
+    wander: { x, y },
     alive: true
   };
 }
 
 function spawnNPCs() {
   npcs = [
-    { x: 30, y: 22, kind: 'npc',  name: 'Крестьянин', dir: 'down', lines: [
+    { x: 46, y: 29, kind: 'npc',  name: 'Крестьянин', dir: 'down', met: false, animT: 0, lines: [
         "Добро пожаловать в Дубраву, путник!",
-        "Гоблины шастают по лесам на юге. Будь осторожен.",
-        "Дровосеку нужна помощь — поговори с ним."
-      ], quest: 'q_wolves' },
-    { x: 35, y: 25, kind: 'mage', name: 'Старейшина', dir: 'down', lines: [
+        "Гоблины шастают по лесам. Будь осторожен.",
+        "Старейшина ждёт тебя в центре деревни."
+      ] },
+    { x: 54, y: 35, kind: 'mage', name: 'Старейшина', dir: 'down', met: false, animT: 0, lines: [
         "Я чувствую в тебе силу, странник.",
         "Одолей трёх гоблинов — и я раскрою первое умение.",
         "Навыки открываются по мере роста уровня."
-      ], quest: 'q_goblins' },
-    { x: 28, y: 27, kind: 'npc',  name: 'Кузнец', dir: 'up', lines: [
+      ] },
+    { x: 48, y: 36, kind: 'npc',  name: 'Кузнец', dir: 'up', met: false, animT: 0, gift: true, lines: [
         "Сталь куётся в огне, а герой — в бою.",
         "За зелья не благодари — просто выживи."
-      ], gift: true }
+      ] },
+    { x: 53, y: 29, kind: 'npc',  name: 'Фермер', dir: 'up', met: false, animT: 0, lines: [
+        "Пшеница в этом году богатая!",
+        "Пройдись по дороге на восток — там красивый лес."
+      ] }
   ];
 }
 
 /* ============================================================
-   КВЕСТЫ И НАВЫКИ
+   КВЕСТЫ / НАВЫКИ
    ============================================================ */
 let quests = [];
 let skills = [];
-
+let skillPoints = 3;
 let ui = { showQuests: false, showSkills: false, dialog: null, toast: [] };
 
 function initQuests() {
   quests = [
-    {
-      id: 'q_goblins', title: 'Гоблины в лесах',
-      desc: 'Одолей 3 гоблинов на юге Дубравы.',
-      goal: 3, progress: 0, done: false, rewardXp: 30, rewardGold: 15
-    },
-    {
-      id: 'q_wolves', title: 'Пропавший дровосек',
-      desc: 'Поговори со всеми жителями деревни (3 NPC).',
-      goal: 3, progress: 0, done: false, rewardXp: 20, rewardGold: 10
-    },
-    {
-      id: 'q_explore', title: 'Разведка острова',
-      desc: 'Дойди до южного берега и вернись в деревню.',
-      goal: 1, progress: 0, done: false, rewardXp: 25, rewardGold: 12
-    }
+    { id: 'q_goblins', title: 'Гоблины в лесах', desc: 'Одолей 3 гоблинов на острове.',
+      goal: 3, progress: 0, done: false, rewardXp: 30, rewardGold: 15 },
+    { id: 'q_npcs', title: 'Знакомство с деревней', desc: 'Поговори со всеми жителями (4 NPC).',
+      goal: 4, progress: 0, done: false, rewardXp: 20, rewardGold: 10 },
+    { id: 'q_explore', title: 'Разведка края', desc: 'Дойди до берега моря на севере острова.',
+      goal: 1, progress: 0, done: false, rewardXp: 25, rewardGold: 12 }
   ];
 }
 
 function initSkills() {
   skills = [
     { id: 's_slash', name: 'Размашистый удар', desc: 'Атака бьёт по всем врагам рядом.', cost: 1, learned: false, req: [] },
-    { id: 's_tough', name: 'Крепкая кожа',   desc: '+10 к максимуму здоровья.',      cost: 1, learned: false, req: [] },
-    { id: 's_heal',  name: 'Лечение',        desc: 'A восстанавливает 10 HP (тратит зелье).', cost: 1, learned: false, req: [] },
-    { id: 's_crit',  name: 'Смертельный удар', desc: '25% шанс двойного урона.',      cost: 1, learned: false, req: ['s_slash'] }
+    { id: 's_tough', name: 'Крепкая кожа',     desc: '+10 к максимуму здоровья.',        cost: 1, learned: false, req: [] },
+    { id: 's_heal',  name: 'Лечение',          desc: 'A — лечиться за зелье (10 HP).',   cost: 1, learned: false, req: [] },
+    { id: 's_crit',  name: 'Смертельный удар', desc: '25% шанс двойного урона.',         cost: 1, learned: false, req: ['s_slash'] }
   ];
 }
 
-let skillPoints = 3;
-
 function hasSkill(id) { const s = skills.find(s => s.id === id); return !!(s && s.learned); }
-function canLearn(s) {
-  if (s.learned || skillPoints < s.cost) return false;
-  return s.req.every(r => hasSkill(r));
-}
+function canLearn(s) { return !s.learned && skillPoints >= s.cost && s.req.every(r => hasSkill(r)); }
 function learn(s) {
   if (!canLearn(s)) return;
-  skillPoints -= s.cost;
-  s.learned = true;
+  skillPoints -= s.cost; s.learned = true;
   if (s.id === 's_tough') { player.hpMax += 10; player.hp += 10; }
   toast('Изучено: ' + s.name, '#8ee08e');
 }
-
-function toast(text, color) { ui.toast.push({ text, color: color || '#ffffff', t: 0, life: 3.2 }); }
+function toast(text, color) { ui.toast.push({ text, color: color || '#fff', t: 0, life: 3.2 }); }
 
 /* ============================================================
    ВВОД
@@ -471,7 +611,7 @@ function keyPressed() {
   const k = (key || '').toLowerCase();
   keys[k] = true;
   if (k === 'e') { if (ui.dialog) ui.dialog = null; else interact(); }
-  if (k === 'q') { if (ui.dialog) { ui.dialog = null; } else ui.showQuests = !ui.showQuests; }
+  if (k === 'q') { if (ui.dialog) ui.dialog = null; else ui.showQuests = !ui.showQuests; }
   if (k === 'k') ui.showSkills = !ui.showSkills;
   if (k === 'escape') { ui.dialog = null; ui.showQuests = false; ui.showSkills = false; }
   if (k === '1' && ui.showSkills) learn(skills[0]);
@@ -486,6 +626,7 @@ function keyPressed() {
   return false;
 }
 function keyReleased() { keys[(key || '').toLowerCase()] = false; return false; }
+function mousePressed() { if (!ui.dialog) attack(); return false; }
 
 function inputVector() {
   let dx = 0, dy = 0;
@@ -501,28 +642,28 @@ function inputVector() {
    ============================================================ */
 function updatePlayer(dt) {
   const { dx, dy } = inputVector();
-  player.moving = (dx !== 0 || dy !== 0);
+  player.moving = (dx !== 0 || dy !== 0) && player.atkT <= 0;
 
   if (player.moving) {
     const len = Math.hypot(dx, dy) || 1;
     const nx = dx / len, ny = dy / len;
-    // пошаговое движение со скольжением по препятствиям
     tryMove(player, nx * player.speed * dt, ny * player.speed * dt);
     if (Math.abs(nx) > Math.abs(ny)) player.dir = nx > 0 ? 'right' : 'left';
-    else if (ny !== 0)                player.dir = ny > 0 ? 'down' : 'up';
-
+    else if (ny !== 0) player.dir = ny > 0 ? 'down' : 'up';
     player.animT += dt;
-    if (player.animT > 0.16) { player.animT = 0; player.frame = 1 - player.frame; }
+    if (player.animT > 0.14) { player.animT = 0; player.frame = 1 - player.frame; }
   } else {
     player.frame = 0;
+    player.animT = 0;
   }
+  player.atkT = Math.max(0, player.atkT - dt);
+  player.atkAnim = Math.max(0, player.atkAnim - dt);
+  player.hurtT = Math.max(0, player.hurtT - dt);
 }
 
-// движение с раздельной проверкой осей => скольжение вдоль стен
 function tryMove(ent, mx, my) {
-  const r = 0.32; // радиус коллизии в тайлах
-  const nx = ent.x + mx;
-  const ny = ent.y + my;
+  const r = 0.32;
+  const nx = ent.x + mx, ny = ent.y + my;
   const blocked = (x, y) => isSolid(Math.floor(x - r), Math.floor(y - r)) ||
                             isSolid(Math.floor(x + r), Math.floor(y - r)) ||
                             isSolid(Math.floor(x - r), Math.floor(y + r)) ||
@@ -534,37 +675,42 @@ function tryMove(ent, mx, my) {
 function updateMobs(dt) {
   for (const m of mobs) {
     if (!m.alive) continue;
-    m.hurtCd = Math.max(0, m.hurtCd - dt);
+    m.hurtT = Math.max(0, m.hurtT - dt);
     m.attackCd = Math.max(0, m.attackCd - dt);
+    m.atkT = Math.max(0, m.atkT - dt);
 
     const distP = Math.hypot(player.x - m.x, player.y - m.y);
 
-    if (distP < 6.5) {
-      // агро: идём к игроку
-      const len = Math.hypot(player.x - m.x, player.y - m.y) || 1;
-      const ux = (player.x - m.x) / len, uy = (player.y - m.y) / len;
-      if (distP > 0.85) {
+    if (distP < 8 && player.hp > 0) {
+      // агро: бежит к игроку
+      const ux = (player.x - m.x) / (distP || 1), uy = (player.y - m.y) / (distP || 1);
+      if (distP > 1.0) {
         tryMove(m, ux * m.speed * dt, uy * m.speed * dt);
         m.moving = true;
         if (Math.abs(ux) > Math.abs(uy)) m.dir = ux > 0 ? 'right' : 'left';
         else m.dir = uy > 0 ? 'down' : 'up';
       } else if (m.attackCd <= 0) {
-        // враг бьёт игрока
+        // НАПАДЕНИЕ: рывок к игроку + урон
+        m.atkT = 0.35;
+        m.attackCd = 1.15;
+        tryMove(m, ux * 0.5, uy * 0.5); // подшаг
         const dmg = Math.max(1, m.atk + Math.floor(Math.random() * 3) - 1);
-        player.hp -= dmg;
-        m.attackCd = 1.1;
-        addFloater(player.x, player.y - 0.7, '-' + dmg, '#ff8080');
-        for (let i = 0; i < 6; i++) particles.push(makeParticle(player.x, player.y, '#ff6b6b'));
-        if (player.hp <= 0) respawnPlayer();
+        if (Math.hypot(player.x - m.x, player.y - m.y) < 1.3) {
+          player.hp -= dmg;
+          player.hurtT = 0.25;
+          addFloater(player.x, player.y - 0.8, '-' + dmg, '#ff7070');
+          for (let i = 0; i < 8; i++) particles.push(makeParticle(player.x, player.y, '#ff6b6b'));
+          if (player.hp <= 0) respawnPlayer();
+        }
       }
     } else {
-      // блуждание по маршруту
+      // блуждание
       m.timer -= dt;
       if (m.timer <= 0) {
         m.timer = 2 + Math.random() * 3;
         const a = Math.random() * Math.PI * 2;
-        m.wander.x = m.x + Math.cos(a) * 3;
-        m.wander.y = m.y + Math.sin(a) * 3;
+        m.wander.x = m.x + Math.cos(a) * 3.5;
+        m.wander.y = m.y + Math.sin(a) * 3.5;
       }
       const len = Math.hypot(m.wander.x - m.x, m.wander.y - m.y);
       if (len > 0.3) {
@@ -573,15 +719,14 @@ function updateMobs(dt) {
         m.moving = true;
         if (Math.abs(ux) > Math.abs(uy)) m.dir = ux > 0 ? 'right' : 'left';
         else m.dir = uy > 0 ? 'down' : 'up';
-      } else { m.moving = false; m.wander.x = m.x; m.wander.y = m.y; }
+      } else { m.moving = false; }
     }
-
     m.animT += dt;
-    if (m.animT > 0.2) { m.animT = 0; m.frame = 1 - m.frame; }
+    if (m.animT > 0.18) { m.animT = 0; m.frame = 1 - m.frame; }
   }
 
-  // разделение мобов, чтобы не слипались
-  for (let i = 0; i < mobs.length; i++) {
+  // расталкивание мобов
+  for (let i = 0; i < mobs.length; i++)
     for (let j = i + 1; j < mobs.length; j++) {
       const a = mobs[i], b = mobs[j];
       if (!a.alive || !b.alive) continue;
@@ -593,47 +738,52 @@ function updateMobs(dt) {
         tryMove(b, -ux * push, -uy * push);
       }
     }
-  }
 }
 
 function respawnPlayer() {
   player.hp = player.hpMax;
-  player.x = 32.5; player.y = 26.5;
+  player.x = 50.5; player.y = 32.5;
   toast('Ты потерял сознание... и очнулся в деревне.', '#ffb0b0');
 }
 
-function attack() {
-  const [fx, fy] = faceDirection();
-
-  let hits = 0;
-  const canSweep = hasSkill('s_slash');
-  for (const m of mobs) {
-    if (!m.alive) continue;
-    const near = Math.hypot(m.x - player.x, m.y - player.y) < 1.25;
-    if (!near) continue;
-    if (canSweep || Math.hypot(m.x - (player.x + fx), m.y - (player.y + fy)) < 1.1) {
-      let dmg = 4 + Math.floor(Math.random() * 3) + Math.floor(player.level * 1.5);
-      if (hasSkill('s_crit') && Math.random() < 0.25) dmg *= 2;
-      m.hp -= dmg;
-      m.hurtCd = 0.25;
-      hits++;
-      addFloater(m.x, m.y - 0.7, '-' + dmg, dmg > 6 ? '#ffd166' : '#ffe066');
-      for (let i = 0; i < 8; i++) particles.push(makeParticle(m.x, m.y, '#ffd166'));
-      if (m.hp <= 0) killMob(m);
-    }
-  }
-  if (hits === 0) {
-    // замах в пустоту
-    for (let i = 0; i < 4; i++) particles.push(makeParticle(player.x + fx * 0.8, player.y + fy * 0.8, '#dfe6ff'));
-  }
+function faceDir() {
+  const d = player.dir;
+  if (d === 'up') return [0, -1];
+  if (d === 'down') return [0, 1];
+  if (d === 'left') return [-1, 0];
+  return [1, 0];
 }
 
-function faceDirection() {
-  const d = player.dir;
-  if (d === 'up')    return [0, -1];
-  if (d === 'down')  return [0, 1];
-  if (d === 'left')  return [-1, 0];
-  return [1, 0];
+function attack() {
+  if (player.atkT > 0) return;
+  player.atkT = 0.25; player.atkAnim = 0.28;
+  const [fx, fy] = faceDir();
+
+  let hits = 0;
+  const sweep = hasSkill('s_slash');
+  for (const m of mobs) {
+    if (!m.alive) continue;
+    const dist = Math.hypot(m.x - player.x, m.y - player.y);
+    if (dist > 1.55) continue;
+    // фронт по направлению взгляда (или все вокруг при sweep)
+    const dot = ((m.x - player.x) * fx + (m.y - player.y) * fy) / (dist || 1);
+    if (!sweep && dot < 0.35) continue;
+    let dmg = 5 + Math.floor(Math.random() * 3) + Math.floor(player.level * 1.5);
+    if (hasSkill('s_crit') && Math.random() < 0.25) dmg = Math.round(dmg * 2);
+    m.hp -= dmg;
+    m.hurtT = 0.3;
+    hits++;
+    addFloater(m.x, m.y - 0.8, '-' + dmg, dmg > 8 ? '#ffd166' : '#ffe066');
+    // отбрасывание назад
+    const kb = 0.35;
+    tryMove(m, -fx * kb, -fy * kb);
+    for (let i = 0; i < 10; i++) particles.push(makeParticle(m.x, m.y, '#ffd166'));
+    if (m.hp <= 0) killMob(m);
+  }
+  if (hits === 0) {
+    for (let i = 0; i < 6; i++)
+      particles.push(makeParticle(player.x + fx * 0.9, player.y + fy * 0.9, '#cfd6ff'));
+  }
 }
 
 function killMob(m) {
@@ -642,20 +792,21 @@ function killMob(m) {
   player.gold += 2 + Math.floor(Math.random() * 4);
   toast('Побеждён: ' + m.name + ' (+' + m.xp + ' XP)', '#ffe066');
   drops.push({ x: m.x, y: m.y, t: 0, type: Math.random() < 0.5 ? 'gold' : 'potion' });
-  for (let i = 0; i < 14; i++) particles.push(makeParticle(m.x, m.y, '#88ff88'));
+  corpses.push({ x: m.x, y: m.y, kind: m.kind, t: 0 });
+  for (let i = 0; i < 16; i++) particles.push(makeParticle(m.x, m.y, '#88ff88'));
   checkLevel();
   bumpQuest('q_goblins', 1);
-  // через 20 секунд гоблин возродится где-то на карте, чтобы мир не пустел
+  // респавн где-то в мире
   setTimeout(() => {
-    for (let t = 0; t < 12; t++) {
-      const x = 8 + Math.floor(Math.random() * (MAP_W - 16));
-      const y = 8 + Math.floor(Math.random() * (MAP_H - 16));
-      if (map[y][x] >= 4 && !objAt(x, y) && Math.hypot(x - player.x, y - player.y) > 12) {
+    for (let t = 0; t < 14; t++) {
+      const x = 6 + Math.floor(Math.random() * (MAP_W - 12));
+      const y = 6 + Math.floor(Math.random() * (MAP_H - 12));
+      if (!isSolid(x, y) && Math.hypot(x - player.x, y - player.y) > 12) {
         mobs.push(makeMob(x, y, Math.random() < 0.3 ? 'brute' : 'goblin'));
         break;
       }
     }
-  }, 20000);
+  }, 18000);
 }
 
 function checkLevel() {
@@ -676,8 +827,7 @@ function bumpQuest(id, amount) {
   q.progress = Math.min(q.goal, q.progress + amount);
   if (q.progress >= q.goal) {
     q.done = true;
-    player.xp += q.rewardXp;
-    player.gold += q.rewardGold;
+    player.xp += q.rewardXp; player.gold += q.rewardGold;
     toast('Квест выполнен: ' + q.title + ' (+' + q.rewardXp + ' XP)', '#b6e3a0');
     checkLevel();
   }
@@ -685,24 +835,19 @@ function bumpQuest(id, amount) {
 
 function interact() {
   if (ui.dialog) { ui.dialog = null; return; }
-
-  // NPC рядом?
   for (const n of npcs) {
-    if (Math.hypot(n.x - player.x, n.y - player.y) < 1.6) {
+    if (Math.hypot(n.x - player.x, n.y - player.y) < 1.7) {
       ui.dialog = { name: n.name, line: n.lines[Math.floor(Math.random() * n.lines.length)] };
-      if (n.gift && !n.gave) {
-        n.gave = true;
-        player.potions += 2;
-        toast('Кузнец дал 2 зелья', '#ffe066');
+      if (n.gift && !n.gave) { n.gave = true; player.potions += 2; toast('Кузнец дал 2 зелья', '#ffe066'); }
+      if (!n.met) {
+        n.met = true;
+        bumpQuest('q_npcs', 1);
       }
-      n.met = true;
-      if (npcs.every(x => x.met)) bumpQuest('q_wolves', 3);
       return;
     }
   }
-  // моб рядом? тогда атакуем
   for (const m of mobs) {
-    if (m.alive && Math.hypot(m.x - player.x, m.y - player.y) < 1.4) { attack(); return; }
+    if (m.alive && Math.hypot(m.x - player.x, m.y - player.y) < 1.5) { attack(); return; }
   }
   toast('Рядом никого нет.', '#c8c8d0');
 }
@@ -711,23 +856,24 @@ function interact() {
    ЭФФЕКТЫ
    ============================================================ */
 function makeParticle(x, y, color) {
-  const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 3;
-  return { x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.45 + Math.random() * 0.3, t: 0, color };
+  const a = Math.random() * Math.PI * 2, s = 1.5 + Math.random() * 4;
+  return { x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.4 + Math.random() * 0.35, t: 0, color };
 }
 function addFloater(x, y, text, color) { floaters.push({ x, y, text, color, t: 0, life: 1.0 }); }
 
 function updateEffects(dt) {
-  for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.92; p.vy *= 0.92; }
+  for (const p of particles) { p.t += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.9; p.vy *= 0.9; }
   particles = particles.filter(p => p.t < p.life);
   for (const f of floaters) { f.t += dt; f.y -= dt * 0.8; }
   floaters = floaters.filter(f => f.t < f.life);
+  for (const c of corpses) c.t += dt;
+  corpses = corpses.filter(c => c.t < 1.6);
   for (const d of drops) d.t += dt;
-  // подбираем дропы
   for (const d of drops) {
     if (d.t > 0.4 && !d.taken && Math.hypot(d.x - player.x, d.y - player.y) < 1.0) {
       d.taken = true;
       if (d.type === 'gold') { const g = 3 + Math.floor(Math.random() * 6); player.gold += g; addFloater(d.x, d.y, '+' + g + ' золота', '#ffd166'); }
-      else { player.potions++; addFloater(d.x, d.y, '+1 зелье', '#9ad7ff'); }
+      else { player.potions = Math.min(9, player.potions + 1); addFloater(d.x, d.y, '+1 зелье', '#9ad7ff'); }
     }
   }
   drops = drops.filter(d => !d.taken && d.t < 30);
@@ -754,7 +900,7 @@ function setup() {
   spawnMobs();
   initQuests();
   initSkills();
-  toast('WASD — идти, E — говорить, ПРОБЕЛ — атака, Q — квесты, K — навыки', '#dbe9ff');
+  toast('Большой мир готов! WASD — идти, ПРОБЕЛ — атака, E — говорить', '#dbe9ff');
 }
 
 function draw() {
@@ -765,7 +911,6 @@ function draw() {
   updateEffects(dt);
   updateQuests(dt);
 
-  // камера по центру игрока, с ограничением по краям карты
   cam.x = player.x - VIEW_W / 2;
   cam.y = player.y - VIEW_H / 2;
   cam.x = Math.max(0, Math.min(MAP_W - VIEW_W, cam.x));
@@ -778,6 +923,7 @@ function draw() {
 
   drawTiles();
   drawDecor();
+  drawCorpses();
   drawEntities();
   pop();
 
@@ -789,7 +935,6 @@ function tileColor(t, x, y) {
     case 0: return COLORS.void;
     case 1: return COLORS.deep;
     case 2: {
-      // лёгкая рябь по воде
       const w = Math.sin((x * 0.7 + y * 1.3 + frameCount * 0.03)) * 8;
       return [COLORS.water[0] + w, COLORS.water[1] + w, COLORS.water[2] + w];
     }
@@ -799,7 +944,9 @@ function tileColor(t, x, y) {
     case 6: return COLORS.forest;
     case 7: return ((x + y) % 2 === 0) ? COLORS.stone : COLORS.stone2;
     case 8: return COLORS.path;
-    case 9: return COLORS.wood;
+    case 9: return ((x + y) % 2 === 0) ? COLORS.floor : COLORS.floor2;
+    case 10: return COLORS.crops;
+    case 11: return COLORS.flowers;
     default: return COLORS.grass;
   }
 }
@@ -810,23 +957,18 @@ function drawTiles() {
   for (let y = sy - 1; y < sy + VIEW_H + 2; y++) {
     for (let x = sx - 1; x < sx + VIEW_W + 2; x++) {
       if (!inBounds(x, y)) { fill(COLORS.void); rect(x * TILE, y * TILE, TILE, TILE); continue; }
-      const c = tileColor(map[y][x], x, y);
+      const c = tileColor(worldMap[y][x], x, y);
       fill(c[0], c[1], c[2]);
       rect(x * TILE, y * TILE, TILE, TILE);
 
-      // пиксельные детали поверх травы — «шум» для ретро-вида
-      if (map[y][x] === 4 || map[y][x] === 5) {
-        const h = hash2(x, y);
-        if (h > 0.6) {
-          fill(58, 118, 54);
-          rect(x * TILE + Math.floor(h * 12), y * TILE + Math.floor(h * 10), 2, 2);
-        }
+      const h = hash2(x, y);
+      if (worldMap[y][x] === 4 || worldMap[y][x] === 5) {
+        if (h > 0.62) { fill(58, 118, 54); rect(x * TILE + Math.floor(h * 13), y * TILE + Math.floor(h * 9), 2, 2); }
+        if (h > 0.88) { fill(120, 170, 100); rect(x * TILE + Math.floor(h * 6), y * TILE + Math.floor(h * 12), 1, 3); }
       }
-      // блики на воде
-      if (map[y][x] === 2 && hash2(x * 3, y * 3) > 0.82) {
-        fill(140, 190, 235);
-        rect(x * TILE + 3, y * TILE + 5, 4, 2);
-      }
+      if (worldMap[y][x] === 3 && h > 0.85) { fill(190, 170, 120); rect(x * TILE + Math.floor(h * 10), y * TILE + Math.floor(h * 8), 3, 2); }
+      if (worldMap[y][x] === 2 && h > 0.8) { fill(140, 190, 235); rect(x * TILE + 3, y * TILE + 5, 4, 2); }
+      if (worldMap[y][x] === 10 && h > 0.5) { fill(196, 200, 110); rect(x * TILE + Math.floor(h * 12), y * TILE + 6, 2, 4); }
     }
   }
 }
@@ -835,27 +977,51 @@ function drawDecor() {
   for (const d of decor) {
     if (d.x < cam.x - 2 || d.x > cam.x + VIEW_W + 2 || d.y < cam.y - 2 || d.y > cam.y + VIEW_H + 2) continue;
     const px = d.x * TILE, py = d.y * TILE;
-    if (d.type === 'grass') {
-      fill(64, 132, 60);
-      rect(px + 4, py + 8, 2, 5); rect(px + 8, py + 6, 2, 7); rect(px + 11, py + 9, 2, 4);
-    } else {
-      fill(46, 104, 50);
-      rect(px + 3, py + 8, 10, 6);
-      fill(150, 180, 90);
-      rect(px + 5, py + 7, 6, 3);
+    if (d.type === 'flower') {
+      fill(232, 190, 130); rect(px + 7, py + 6, 2, 3);
+      fill(140, 170, 100); rect(px + 6, py + 9, 4, 2);
+    } else if (d.type === 'bush') {
+      fill(46, 104, 50); rect(px + 3, py + 8, 10, 6);
+      fill(150, 180, 90); rect(px + 5, py + 7, 6, 3);
+    } else if (d.type === 'lamp') {
+      const on = Math.sin(frameCount * 0.05 + d.x) > 0.7;
+      fill(60, 40, 26); rect(px, py + 6, 2, 8);
+      fill(on ? 255 : 150, on ? 220 : 140, on ? 90 : 60); rect(px - 1, py + 3, 4, 4);
     }
   }
 }
 
+function drawCorpses() {
+  for (const c of corpses) {
+    const a = 1 - c.t / 1.6;
+    const px = c.x * TILE - SPRITE / 2;
+    const py = c.y * TILE - SPRITE + 6;
+    push();
+    translate(px, py);
+    const spr = c.kind === 'brute' ? SPR_G_BRUTE_1 : SPR_G_1;
+    for (let y = 0; y < spr.length; y++)
+      for (let xx = 0; xx < spr[y].length; xx++) {
+        const col = PAL[spr[y][xx]];
+        if (!col) continue;
+        fill(col[0] * a, col[1] * a * 0.8, col[2] * a * 0.8);
+        rect(xx, y, 1, 1);
+      }
+    pop();
+  }
+}
+
 function drawEntities() {
-  // сортировка по Y — правильное перекрытие
   const list = [];
   for (const o of objects) {
-    if (o.x < cam.x - 2 || o.x > cam.x + VIEW_W + 2 || o.y < cam.y - 2 || o.y > cam.y + VIEW_H + 3) continue;
+    if (o.x < cam.x - 3 || o.x > cam.x + VIEW_W + 3 || o.y < cam.y - 3 || o.y > cam.y + VIEW_H + 4) continue;
     list.push({ y: o.y, draw: () => drawObject(o) });
   }
   for (const d of drops) list.push({ y: d.y, draw: () => drawDrop(d) });
-  for (const n of npcs) list.push({ y: n.y, draw: () => drawNPC(n) });
+  for (const n of npcs) {
+    n.animT = (n.animT || 0) + 0.008;
+    if (n.animT > 0.3) n.animT = 0;
+    list.push({ y: n.y, draw: () => drawNPC(n) });
+  }
   for (const m of mobs) if (m.alive) list.push({ y: m.y, draw: () => drawMob(m) });
   list.push({ y: player.y, draw: () => drawPlayerSprite() });
   for (const p of particles) list.push({ y: p.y - 0.05, draw: () => drawParticle(p) });
@@ -868,29 +1034,35 @@ function drawEntities() {
 function drawObject(o) {
   const px = o.x * TILE, py = o.y * TILE;
   if (o.type === 'tree') {
-    // ствол
+    const sway = Math.sin(frameCount * 0.02 + o.x) * 1;
     fill(COLORS.wood2); rect(px + 6, py + 8, 4, 8);
-    fill(COLORS.wood);  rect(px + 6, py + 9, 2, 7);
-    // крона
-    fill(30, 78, 44);   rect(px + 1, py - 6, 14, 14);
-    fill(44, 104, 54);  rect(px + 2, py - 5, 12, 11);
-    fill(64, 130, 62);  rect(px + 4, py - 4, 8, 6);
-    fill(88, 158, 78);  rect(px + 5, py - 3, 4, 3);
+    fill(COLORS.wood);  rect(px + 6, py + 8, 2, 8);
+    push();
+    translate(px, py);
+    translate(sway, 0);
+    fill(30, 78, 44);   rect(1, -6, 14, 14);
+    fill(44, 104, 54);  rect(2, -5, 12, 10);
+    fill(64, 130, 62);  rect(4, -3, 8, 5);
+    fill(88, 158, 78);  rect(5, -2, 4, 2);
+    pop();
   } else if (o.type === 'house') {
-    // стены
     fill(COLORS.wood);  rect(px - 8, py - 8, 32, 32);
     fill(COLORS.wood2); rect(px - 8, py + 18, 32, 6);
-    // крыша
     fill(COLORS.roof2); rect(px - 12, py - 14, 40, 10);
     fill(COLORS.roof);  rect(px - 14, py - 20, 44, 8);
     fill(COLORS.roof2); rect(px - 10, py - 24, 36, 6);
-    // окно и дверь
-    fill(120, 180, 210); rect(px - 2, py - 2, 8, 8);
+    // окно светится
+    const glow = 140 + Math.sin(frameCount * 0.06 + o.x) * 30;
+    fill(glow + 40, glow + 60, 90);
+    rect(px - 2, py - 2, 8, 8);
     fill(50, 90, 130);   rect(px + 1, py - 1, 2, 6);
     fill(COLORS.door);   rect(px + 12, py + 2, 8, 14);
     fill(200, 170, 90);  rect(px + 18, py + 8, 2, 2);
-    // труба
-    fill(90, 90, 96); rect(px + 14, py - 28, 6, 6);
+    fill(90, 90, 96);    rect(px + 14, py - 28, 6, 6);
+    // дым из трубы
+    const sm = (frameCount * 0.04 + o.x) % 1;
+    fill(200, 200, 205, 120 * (1 - sm));
+    rect(px + 15, py - 34 - sm * 8, 3, 3);
   }
 }
 
@@ -907,7 +1079,7 @@ function drawDrop(d) {
   }
 }
 
-// отрисовка спрайта по строковой матрице
+/* --- спрайт по матрице, flip, tint, fade --- */
 function drawSprite(sprite, px, py, flip, tint) {
   push();
   translate(px, py);
@@ -926,24 +1098,53 @@ function drawSprite(sprite, px, py, flip, tint) {
   pop();
 }
 
+/* --- выбор кадра по направлению --- */
+function animFrame(dir, frame) {
+  if (dir === 'up')   return [frame ? SPR_P_UP_2   : SPR_P_UP_1,   false];
+  if (dir === 'left') return [frame ? SPR_P_SIDE_2 : SPR_P_SIDE_1, true];
+  if (dir === 'right')return [frame ? SPR_P_SIDE_2 : SPR_P_SIDE_1, false];
+  return [frame ? SPR_P_DOWN_2 : SPR_P_DOWN_1, false];
+}
+function mobFrame(dir, frame, kind) {
+  const g1 = kind === 'brute' ? SPR_G_BRUTE_1 : SPR_G_1;
+  const g2 = kind === 'brute' ? SPR_G_BRUTE_2 : SPR_G_2;
+  const spr = frame ? g2 : g1;
+  return [spr, dir === 'left'];
+}
+
 function drawPlayerSprite() {
   const px = player.x * TILE - SPRITE / 2;
   const py = player.y * TILE - SPRITE + 3;
-  let spr = SPR_PLAYER_DOWN, flip = false;
-  if (player.dir === 'up') spr = SPR_PLAYER_UP;
-  else if (player.dir === 'left') { spr = SPR_PLAYER_SIDE; flip = true; }
-  else if (player.dir === 'right') spr = SPR_PLAYER_SIDE;
+  const [spr, flip] = animFrame(player.dir, player.moving ? player.frame : 0);
 
-  // тень
   noStroke(); fill(0, 0, 0, 70);
   ellipse(player.x * TILE, player.y * TILE + 4, 12, 5);
 
-  // покачивание при ходьбе — сдвигаем на 1 px по вертикали
   const bob = player.moving ? (player.frame ? -1 : 0) : 0;
-  drawSprite(spr, px, py + bob, flip, null);
+  const tint = player.hurtT > 0 ? [3, 0.9, 0.9] : null;
+  drawSprite(spr, px, py + bob, flip, tint);
 
-  // полоска здоровья над головой
-  drawHpBar(player.x, player.y - 0.75, player.hp, player.hpMax, 14);
+  // АНИМАЦИЯ АТАКИ: клинок с дугой
+  if (player.atkAnim > 0) {
+    const t = 1 - player.atkAnim / 0.28;
+    const [fx, fy] = faceDir();
+    const ang = Math.atan2(fy, fx);
+    const a0 = ang - 1.2 + t * 1.7;
+    push();
+    translate(player.x * TILE, player.y * TILE - 8);
+    rotate(a0);
+    fill(PAL.p[0], PAL.p[1], PAL.p[2]);
+    rect(6, -1, 9, 2);
+    fill(PAL.q[0], PAL.q[1], PAL.q[2]);
+    rect(13, -1, 3, 2);
+    noFill();
+    stroke(255, 255, 200, 150 * t);
+    strokeWeight(2);
+    arc(0, 0, 18, 18, -0.4, t * 1.6 - 0.4);
+    noStroke();
+    pop();
+  }
+  drawHpBar(player.x, player.y - 0.75, player.hp, player.hpMax, 14, true);
 }
 
 function drawNPC(n) {
@@ -951,33 +1152,54 @@ function drawNPC(n) {
   const py = n.y * TILE - SPRITE + 3;
   noStroke(); fill(0, 0, 0, 60);
   ellipse(n.x * TILE, n.y * TILE + 4, 12, 5);
-  drawSprite(n.kind === 'mage' ? SPR_MAGE : SPR_NPC, px, py, n.dir === 'left', null);
-  // маркер «поговори» над NPC, если игрок рядом
-  if (Math.hypot(n.x - player.x, n.y - player.y) < 1.8) {
+  const spr = n.kind === 'mage'
+    ? (n.animT > 0.15 ? SPR_MAGE_2 : SPR_MAGE_1)
+    : (n.animT > 0.15 ? SPR_NPC_2 : SPR_NPC_1);
+  const bobIdle = Math.sin(frameCount * 0.06 + n.x) * 1;
+  drawSprite(spr, px, py + bobIdle, n.dir === 'left', null);
+
+  if (Math.hypot(n.x - player.x, n.y - player.y) < 1.9) {
     const bob = Math.sin(frameCount * 0.12) * 1.5;
-    fill(255, 240, 150); rect(n.x * TILE - 1, py - 6 + bob, 3, 5);
-    fill(255, 240, 150); rect(n.x * TILE - 2, py + 0 + bob, 5, 3);
+    fill(255, 240, 150); rect(n.x * TILE - 1, py - 7 + bob, 3, 5);
+    fill(255, 240, 150); rect(n.x * TILE - 2, py - 1 + bob, 5, 2);
   }
+  fill(240, 240, 245, 200);
+  textSize(6); textAlign(CENTER, BOTTOM);
+  text(n.name, n.x * TILE, py - 2);
 }
 
 function drawMob(m) {
   const px = m.x * TILE - SPRITE / 2;
   const py = m.y * TILE - SPRITE + 3;
+  const [spr, flip] = mobFrame(m.dir, m.moving ? m.frame : 0, m.kind);
+
   noStroke(); fill(0, 0, 0, 60);
   ellipse(m.x * TILE, m.y * TILE + 4, 12, 5);
 
-  const tint = m.hurtCd > 0 ? [2.4, 1.1, 1.1] : null;
-  drawSprite(SPR_ENEMY, px, py + (m.moving && m.frame ? -1 : 0), m.dir === 'left', tint);
+  const tint = m.hurtT > 0 ? (m.hurtT > 0.15 ? [3, 0.9, 0.9] : [1.4, 1.4, 1.4]) : null;
+  const bob = (m.moving && m.frame) ? -1 : 0;
+  const lunge = m.atkT > 0 ? 2 : 0; // рывок вперёд при атаке
+  const lx = lunge * (m.dir === 'left' ? -1 : m.dir === 'right' ? 1 : 0);
+  const ly = lunge * (m.dir === 'up' ? -1 : m.dir === 'down' ? 1 : 0);
+  drawSprite(spr, px + lx, py + ly + bob, flip, tint);
 
-  if (m.hp < m.hpMax) drawHpBar(m.x, m.y - 0.7, m.hp, m.hpMax, 14);
+  // красный «!» при агро
+  if (Math.hypot(m.x - player.x, m.y - player.y) < 6.5 && m.attackCd > 0.7) {
+    fill(255, 90, 60);
+    rect(m.x * TILE + 2, py - 8, 2, 4);
+    rect(m.x * TILE + 2, py - 3, 2, 2);
+  }
+  if (m.hp < m.hpMax) drawHpBar(m.x, m.y - 0.75, m.hp, m.hpMax, 14, false);
 }
 
-function drawHpBar(x, y, hp, hpMax, wpx) {
+/* --- полоса здоровья --- */
+function drawHpBar(x, y, hp, hpMax, wpx, hideFull) {
+  const ratio = Math.max(0, hp / hpMax);
+  if (hideFull && ratio >= 1) return;
   const px = x * TILE - wpx / 2, py = y * TILE;
   noStroke();
   fill(20, 20, 26);   rect(px - 1, py - 1, wpx + 2, 4);
   fill(120, 30, 30);  rect(px, py, wpx, 2);
-  const ratio = Math.max(0, hp / hpMax);
   fill(ratio > 0.5 ? 90 : 220, ratio > 0.5 ? 210 : 80, 80);
   rect(px, py, wpx * ratio, 2);
 }
@@ -1005,12 +1227,11 @@ function drawFloater(f) {
   pop();
 }
 
-/* ---------- экранный интерфейс ---------- */
+/* ---------- HUD ---------- */
 function drawOverlayUI() {
   push();
-  // HUD слева сверху
   const hudW = 176, hudH = 68;
-  fill(12, 14, 22, 205); noStroke();
+  fill(10, 12, 20, 210); noStroke();
   rect(10, 10, hudW, hudH, 6);
   stroke(90, 110, 150); strokeWeight(1); noFill();
   rect(10, 10, hudW, hudH, 6);
@@ -1021,7 +1242,6 @@ function drawOverlayUI() {
   fill(180, 200, 230); textSize(11);
   text('Ур. ' + player.level + '   XP ' + player.xp + '/' + player.xpNext, 20, 34);
 
-  // полоса HP
   fill(30, 30, 38); rect(20, 50, 156, 7);
   fill(190, 60, 60); rect(20, 50, 156, 7);
   fill(80, 210, 110); rect(20, 50, 156 * Math.max(0, player.hp / player.hpMax), 7);
@@ -1031,14 +1251,12 @@ function drawOverlayUI() {
   fill(240, 210, 120); textAlign(LEFT, TOP); textSize(11);
   text('Золото: ' + player.gold + '   Зелья: ' + player.potions, 20, 62);
 
-  // подсказки команд
-  fill(12, 14, 22, 180); rect(10, 86, 176, 46, 6);
+  fill(10, 12, 20, 190); rect(10, 86, 176, 46, 6);
   fill(200, 214, 240); textSize(10);
-  text('ПРОБЕЛ — атака', 20, 92);
+  text('ПРОБЕЛ / ЛКМ — атака', 20, 92);
   text('Q — квесты   K — навыки', 20, 106);
   text('Очки навыков: ' + skillPoints, 20, 120);
 
-  // всплывающие сообщения
   let ty = 146;
   for (const t of ui.toast) {
     const a = t.t < 0.2 ? t.t / 0.2 : (t.t > t.life - 0.6 ? (t.life - t.t) / 0.6 : 1);
@@ -1107,9 +1325,8 @@ function drawDialog() {
 }
 
 function updateQuests(dt) {
-  // квест «разведка»: дойти до южного берега
   const q = quests.find(q => q.id === 'q_explore');
-  if (q && !q.done && player.y > MAP_H - 10) {
+  if (q && !q.done && player.y < 9) {
     q.progress = 1;
     q.done = true;
     player.xp += q.rewardXp; player.gold += q.rewardGold;
@@ -1118,7 +1335,7 @@ function updateQuests(dt) {
   }
 }
 
-function windowResized() { /* фиксированный вьюпорт, ничего не делаем */ }
+function windowResized() { /* фиксированный вьюпорт */ }
 </script>
 </body>
 </html>
