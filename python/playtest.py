@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless playtest: fight for ~2000 frames, rendering every frame (dev tool).
+"""Headless playtest for Pixel RPG 2.0 — fights, loots, trades and learns.
 
-Walks to the nearest enemy, attacks, loots, opens the inventory, and renders each
-frame into a Surface — so render-time crashes (the "invalid destination position for
-blit" bug in 1.3.0 was one) fail loudly here instead of in the player's face.
+Walks to the nearest hostile monster, attacks, casts abilities, picks up loot,
+sells everything at the merchant, spends skill points on the oak and renders every
+frame.  Any exception (render or logic) fails the run.
 
 Usage:  python playtest.py [frames]
-Exit code 0 = clean run.
 """
+
 from __future__ import annotations
 
 import math
@@ -17,79 +17,122 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pygame
 
 import game as G
+import render as R
+import skills as SK
+import world as W
 
-W, H, Z = 1920, 1080, 4
+WIDTH, HEIGHT, ZOOM = 1920, 1080, 2
 
 
-def main(frames: int = 2000) -> int:
+def main(frames: int = 3000) -> int:
     pygame.init()
     pygame.display.set_mode((64, 64))
-    game = G.Game(seed=2026)
-    renderer = G.Renderer(game, W, H, Z)
-    screen = pygame.Surface((W, H))
+    game = G.Game(seed=2027, sound=False)
+    renderer = R.Renderer(game, WIDTH, HEIGHT, ZOOM)
+    screen = pygame.Surface((WIDTH, HEIGHT))
     dt = 1 / 60
     kills = 0
+    gold_start = game.player["gold"]
+    learned_start = len(game.player["learned"])
     stuck = 0
     last = (game.player["x"], game.player["y"])
+    sold = 0
 
     try:
         i = 0
         for i in range(frames):
-            alive = [m for m in game.mobs if m["alive"]]
-            target = min(alive, key=lambda m: math.hypot(m["x"] - game.player["x"],
-                                                         m["y"] - game.player["y"]),
+            p = game.player
+            if game.overlay:
+                game.update(dt, {"up": False, "down": False, "left": False, "right": False})
+                renderer.draw(screen)
+                continue
+
+            # every so often: sell loot, spend a skill point, open an overlay
+            if i % 260 == 0 and i > 0:
+                game.overlay = "shop"
+                game.shop_tab = "sell"
+                game.shop_cursor = 0
+                for _ in range(6):
+                    if game.shop_lines():
+                        game.shop_action()
+                        sold += 1
+                    game.shop_cursor = (game.shop_cursor + 1) % max(1, len(game.shop_lines()))
+                game.overlay = None
+            if i % 420 == 0 and game.skill_points > 0:
+                for node in SK.SKILLS:
+                    if game.learn(node["id"]):
+                        break
+            if i % 700 == 0:
+                game.overlay = "skilltree"
+                renderer.draw(screen)
+                game.overlay = None
+            if i % 900 == 0:
+                game.overlay = "inventory"
+                renderer.draw(screen)
+                game.overlay = None
+
+            alive = [m for m in game.mobs if m["alive"] and not m["passive"]]
+            target = min(alive, key=lambda m: math.hypot(m["x"] - p["x"], m["y"] - p["y"]),
                          default=None)
-            # if the forest walls us off, step next to the target so the fight happens
-            if target and math.hypot(game.player["x"] - last[0],
-                                     game.player["y"] - last[1]) < 0.4:
+            if target and math.hypot(p["x"] - last[0], p["y"] - last[1]) < 0.4:
                 stuck += 1
-                if stuck > 240:
-                    game.player["x"], game.player["y"] = target["x"] - 1.2, target["y"]
+                if stuck > 300:            # teleport past an impassable thicket
+                    p["x"], p["y"] = target["x"] - 1.4, target["y"]
                     stuck = 0
             else:
                 stuck = 0
-            last = (game.player["x"], game.player["y"])
+            last = (p["x"], p["y"])
 
             inp = {"up": False, "down": False, "left": False, "right": False}
             if target:
-                dx = target["x"] - game.player["x"]
-                dy = target["y"] - game.player["y"]
-                if math.hypot(dx, dy) > 1.4:
-                    inp["right"] = dx > 0.25
-                    inp["left"] = dx < -0.25
-                    inp["down"] = dy > 0.25
-                    inp["up"] = dy < -0.25
+                dx = target["x"] - p["x"]
+                dy = target["y"] - p["y"]
+                dist = math.hypot(dx, dy)
+                if dist > 1.5:
+                    inp["right"] = dx > 0.3
+                    inp["left"] = dx < -0.3
+                    inp["down"] = dy > 0.3
+                    inp["up"] = dy < -0.3
                 else:
-                    game.player["dir"] = (("right" if dx > 0 else "left") if abs(dx) > abs(dy)
-                                          else ("down" if dy > 0 else "up"))
-                    if game.player["atk_t"] <= 0:
-                        was_alive = target["alive"]
+                    p["dir"] = (("right" if dx > 0 else "left") if abs(dx) > abs(dy)
+                                else ("down" if dy > 0 else "up"))
+                    if p["atk_t"] <= 0:
+                        was = target["alive"]
                         game.attack()
-                        kills += 1 if was_alive and not target["alive"] else 0
-            if i % 200 == 0:                      # render the inventory overlay too
-                game.show_inventory = not game.show_inventory
+                        kills += 1 if was and not target["alive"] else 0
+                    if p["hotbar"] and p["mp"] > 10 and i % 90 == 0:
+                        game.cast(i % len(p["hotbar"]))
+            if p["hp"] < game.stats()["hp_max"] * 0.4:
+                for idx, slot in enumerate(p["inventory"]):
+                    if slot["id"] in ("potion", "potion_big", "elixir", "meat", "herb"):
+                        game.use_slot(idx)
+                        break
             game.update(dt, inp)
             renderer.draw(screen)
-    except Exception:  # noqa: BLE001 — the point of this tool is to surface crashes
+    except Exception:  # noqa: BLE001 — surfacing crashes is the point
         import traceback
         traceback.print_exc()
         print(f"PLAYTEST FAILED at frame {i}")
         pygame.quit()
         return 1
 
-    print(f"playtest: {frames} frames rendered | kills {kills} | "
-          f"level {game.player['level']} | gold {game.player['gold']} | "
-          f"hp {game.player['hp']:.0f}/{game.player['hp_max']:.0f} | "
-          f"mobs alive {sum(1 for m in game.mobs if m['alive'])} | drops {len(game.drops)}")
+    p = game.player
+    print(f"playtest: {frames} frames rendered | kills {kills} | level {p['level']} | "
+          f"gold {gold_start} -> {p['gold']} | sold {sold} trades | "
+          f"skills {learned_start} -> {len(p['learned'])}/{len(SK.SKILLS)} | "
+          f"mobs alive {sum(1 for m in game.mobs if m['alive'])} | "
+          f"regions {len(game.visited)}/{len(game.world.regions)} | hp "
+          f"{p['hp']:.0f}/{game.stats()['hp_max']:.0f}")
     print("PLAYTEST OK")
     pygame.quit()
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(int(sys.argv[1]) if len(sys.argv) > 1 else 2000))
+    raise SystemExit(main(int(sys.argv[1]) if len(sys.argv) > 1 else 3000))

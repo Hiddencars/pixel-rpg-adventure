@@ -15,6 +15,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 GAME = HERE / "game.py"
 NAME = "PixelRPG"
+MODULES = ("art", "sprites", "items", "skills", "sounds", "world", "render", "selftest")
 
 
 def run_selftest() -> None:
@@ -34,7 +35,7 @@ def build() -> None:
     except ImportError:
         raise SystemExit("PyInstaller is missing: pip install -r requirements.txt")
 
-    pyi.run([
+    args = [
         str(GAME),
         "--name", NAME,
         "--onefile",          # single portable .exe
@@ -44,7 +45,10 @@ def build() -> None:
         "--distpath", str(HERE / "dist"),
         "--workpath", str(HERE / "build"),
         "--specpath", str(HERE),
-    ])
+    ]
+    for module in MODULES:
+        args += ["--hidden-import", module]
+    pyi.run(args)
     exe = HERE / "dist" / f"{NAME}.exe"
     if not exe.exists():
         raise SystemExit("build finished but the .exe is missing")
