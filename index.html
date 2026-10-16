@@ -355,11 +355,24 @@ let floaters = [];
 function spawnMobs() {
   mobs = [];
   const spots = [[18,30],[46,20],[52,38],[22,16],[40,42],[14,24],[56,28],[30,44]];
-  spots.forEach(([x, y], i) => {
-    if (map[y][x] >= 3) {
-      mobs.push(makeMob(x, y, i % 3 === 2 ? 'brute' : 'goblin'));
+  for (const [sx, sy] of spots) {
+    // ищем ближайшую проходимую клетку (спираль), если спот попал на воду/дерево
+    let placed = false;
+    outer:
+    for (let r = 0; r <= 6 && !placed; r++) {
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = sx + dx, y = sy + dy;
+          if (inBounds(x, y) && !isSolid(x, y) && !objAt(x, y)) {
+            mobs.push(makeMob(x, y, mobs.length % 3 === 2 ? 'brute' : 'goblin'));
+            placed = true;
+            break outer;
+          }
+        }
+      }
     }
-  });
+  }
 }
 
 function makeMob(x, y, kind) {
@@ -759,12 +772,14 @@ function draw() {
   cam.y = Math.max(0, Math.min(MAP_H - VIEW_H, cam.y));
 
   background(COLORS.void);
+  push();
   scale(ZOOM);
+  translate(-cam.x * TILE, -cam.y * TILE);
 
   drawTiles();
   drawDecor();
   drawEntities();
-  scale(1 / ZOOM);
+  pop();
 
   drawOverlayUI();
 }
