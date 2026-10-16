@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Pixel RPG Adventure 1.3 — Python / pygame-ce.
+Pixel RPG Adventure 1.3.1 — Python / pygame-ce.
 
 New in 1.3:
   * 32x32 character sprites (double size, real detail) + richer tile/object art
   * full inventory with loot, equipment (weapon/armor) and item use
   * animated main menu, settings screen and pause menu
+
+1.3.1 fixes a crash when a defeated enemy was on screen.
 
 Run:        python game.py [--res 1920x1080] [--fullscreen]
 Self-test:  python game.py --selftest
@@ -1147,7 +1149,10 @@ class Renderer:
             key = "gb_1" if c["kind"] == "brute" else "g_1"
             spr = self.sprites[key].copy()
             spr.set_alpha(alpha)
-            self.logical.blit(spr, *self.anchor(c["x"], c["y"], cam_x, cam_y))
+            # NOTE: pass the position as ONE tuple. `blit(spr, *anchor(...))` sends
+            # two positional arguments, so pygame reads the second as `dest` and the
+            # third as `area` and dies with "invalid destination position for blit".
+            self.logical.blit(spr, self.anchor(c["x"], c["y"], cam_x, cam_y))
 
     @staticmethod
     def anchor(x: float, y: float, cam_x: float, cam_y: float) -> tuple[float, float]:
@@ -1781,7 +1786,7 @@ class Renderer:
         if note:
             n = self.font_small.render(note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.font_small.render("Пиксельное приключение — версия 1.3", True, (150, 164, 188))
+        ver = self.font_small.render("Пиксельное приключение — версия 1.3.1", True, (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
 
@@ -1920,7 +1925,7 @@ def handle_game_key(game: Game, key: int) -> None:
 # ----------------------------------------------------------------------------
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel RPG Adventure 1.3")
+    pygame.display.set_caption("Pixel RPG Adventure 1.3.1")
 
     cfg = load_config()
     res_index = parse_res_arg(sys.argv)
@@ -2226,11 +2231,44 @@ def _selftest_body() -> int:
     print("drops on ground after kill:", ground)
     if ground < 1:
         problems.append("no loot dropped on kill")
+
+    # regression: a corpse on screen used to crash the renderer — the position was
+    # passed as two positional args (`blit(spr, *anchor(...))`), so pygame treated
+    # the second as `dest` and the third as `area`
+    try:
+        Renderer(game2, 1920, 1080, 4).draw(pygame.Surface((1920, 1080)))
+        print("render with a corpse on screen: ok,", len(game2.corpses), "corpse(s)")
+    except Exception as exc:
+        problems.append(f"render crashed with a corpse on screen: {type(exc).__name__}: {exc}")
+
+    # stress: several kills in a row, rendering every frame while corpses, loot,
+    # particles, damage floaters and toasts are all on screen at once
+    try:
+        killed = 0
+        for m in game2.mobs[2:7]:
+            if not m["alive"]:
+                continue
+            p2["x"], p2["y"] = m["x"], m["y"] - 0.5
+            m["hp"] = 1
+            p2["atk_t"] = 0.0
+            game2.attack()
+            killed += m["alive"] is False
+            game2.update(1 / 60, {"up": False, "down": False, "left": False, "right": False})
+            Renderer(game2, 1920, 1080, 4).draw(pygame.Surface((1920, 1080)))
+        for _ in range(90):
+            game2.update(1 / 60, {"up": False, "down": False, "left": False, "right": False})
+            Renderer(game2, 1920, 1080, 4).draw(pygame.Surface((1920, 1080)))
+        print("stress render:", killed, "kills | corpses", len(game2.corpses),
+              "| drops", len(game2.drops), "| particles", len(game2.particles))
+    except Exception as exc:
+        problems.append(f"stress render crashed: {type(exc).__name__}: {exc}")
+
     for _ in range(120):
         game2.update_effects(1 / 60)
     print("bag slots before/after pickup:", bag_before, "->", len(p2["inventory"]))
 
     # ---- walk + animation ----
+    p2["x"], p2["y"] = SPAWN_X, SPAWN_Y       # deterministic: the kills above moved us
     start = (p2["x"], p2["y"])
     frames = set()
     for _ in range(60):

@@ -5,7 +5,7 @@
 
 | Версия | Технологии | Где запускать |
 |---|---|---|
-| **1.3** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelRPG.exe` |
+| **1.3.1** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelRPG.exe` |
 | **1.0** | HTML + p5.js | `index.html` в браузере |
 
 ## Играть
@@ -95,6 +95,7 @@ python/game.py        игра на Python (pygame-ce)
 python/sprites.py     спрайты 32×32 и иконки предметов
 python/items.py       предметы, экипировка, лут-таблицы
 python/shot.py        рендер кадров в PNG (отладка)
+python/playtest.py    headless-прогон боя с отрисовкой каждого кадра (отладка)
 python/build_exe.py   сборка .exe через PyInstaller
 python/requirements.txt
 ```
