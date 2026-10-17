@@ -24,6 +24,7 @@ import pygame
 
 import art
 import items as IT
+import lighting
 import music as MUS
 import quests as QST
 import skills as SK
@@ -509,6 +510,46 @@ def _body() -> int:
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{state} screen crashed: {type(exc).__name__}: {exc}")
     print("menus render ok")
+
+    # ------------------------------------------------- HD-2D: свет и время суток
+    r = R.Renderer(game, 1920, 1080, 2)
+    surf = pygame.Surface((1920, 1080))
+    vx, vy = G.VILLAGE_CENTER
+    p["x"], p["y"] = vx + 1.0, vy + 2.0
+
+    def avg_lum(surface: pygame.Surface) -> float:
+        c = pygame.transform.average_color(surface)
+        return c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114
+
+    game.settings["atmosphere"] = True
+    r.light.forced_phase = 0.30                       # полдень
+    r.draw(surf)
+    day_lum, day_lights = avg_lum(surf), r.light.lights_drawn
+    r.light.forced_phase = 0.78                       # ночь
+    r.draw(surf)
+    night_lum, night_lights = avg_lum(surf), r.light.lights_drawn
+    grads_before = len(r.light._grad)
+    r.draw(surf)
+    grads_after = len(r.light._grad)
+    print(f"light: day {day_lum:.1f} ({day_lights} src) | night {night_lum:.1f} "
+          f"({night_lights} src) | ambient day {lighting.ambient_at(0.30)} "
+          f"night {lighting.ambient_at(0.78)}")
+    check(day_lights >= 3, f"no light sources found in the village ({day_lights})")
+    check(night_lum < day_lum * 0.80, f"night is not darker: {night_lum:.1f} vs {day_lum:.1f}")
+    check(grads_after == grads_before, "light gradients are rebuilt every frame")
+
+    game.settings["atmosphere"] = False
+    r.light.forced_phase = 0.30
+    r.draw(surf)
+    off_lum = avg_lum(surf)
+    print(f"light off at noon: {off_lum:.1f} (должно совпасть с днём)")
+    check(abs(off_lum - day_lum) < 15,
+          f"lighting changes the frame at noon: {off_lum:.1f} vs {day_lum:.1f}")
+    for phase in (0.0, 0.25, 0.5, 0.75, 0.99):
+        lum = sum(lighting.ambient_at(phase)) / 3.0
+        check(30 < lum < 256, f"ambient is out of range at phase {phase}: {lum:.0f}")
+    game.settings["atmosphere"] = True
+    r.light.forced_phase = None
 
     # ------------------------------------------------------------ save / load
     tmp = Path(os.environ.get("TEMP", ".")) / "pixel_rpg_selftest.json"

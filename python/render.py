@@ -26,6 +26,7 @@ import pygame
 import art
 import game as G
 import items as IT
+import lighting
 import music as MUS
 import quests as QST
 import skills as SK
@@ -333,6 +334,7 @@ class Renderer:
         self.minimap = self._build_minimap()
         self.minimap_scaled = pygame.transform.scale(self.minimap, (self.s(200), self.s(102)))
         self.t = 0.0
+        self.light = lighting.LightLayer()
         self._text_cache: dict = {}
         self._scaled_cache: dict = {}
         self._marker_font = pygame.font.Font(None, 18)
@@ -535,6 +537,7 @@ class Renderer:
         self.draw_glows(cam_x, cam_y)
         self.draw_corpses(cam_x, cam_y)
         self.draw_entities(cam_x, cam_y)
+        self._apply_light(cam_x, cam_y)
 
         pygame.transform.scale(self.logical, (self.lw * self.zoom, self.lh * self.zoom),
                                self._scaled)
@@ -553,6 +556,45 @@ class Renderer:
             self.draw_quests(screen)
         if g.dialog and g.overlay is None:
             self.draw_dialog(screen)
+
+    # ------------------------------------------------------------------ свет
+    def _light_sources(self):
+        """Источники света в мире: один скан при первом кадре, дальше кэш."""
+        cached = getattr(self, "_lights", None)
+        if cached is not None:
+            return cached
+        out: list = []
+        for o in self.game.world.objects:
+            kind = o["kind"]
+            if kind == "campfire":
+                out.append((o["x"], o["y"], 4.8, (255, 166, 88), 1.7))
+            elif kind == "lamp":
+                out.append((o["x"], o["y"], 3.4, (255, 214, 150), 1.8))
+            elif kind.startswith("house"):
+                out.append((o["x"], o["y"] - 0.4, 2.4, (255, 202, 146), 1.5))
+        for d in self.game.world.decor:
+            if d["kind"] == "campfire":
+                out.append((d["x"], d["y"], 4.2, (255, 166, 88), 1.7))
+            elif d["kind"] == "lamp":
+                out.append((d["x"], d["y"], 3.2, (255, 214, 150), 1.8))
+        self._lights = out
+        return out
+
+    def _apply_light(self, cam_x: float, cam_y: float) -> None:
+        """HD-2D: амбиент по времени суток + свет от костров, окон и героя."""
+        g = self.game
+        p = g.player
+        phase = self.light.forced_phase
+        if phase is None:
+            phase = (lighting.START_PHASE + g.time / lighting.DAY_LENGTH) % 1.0
+        margin = 6.0
+        lights = [(x, y, r, col, power) for (x, y, r, col, power) in self._light_sources()
+                  if (cam_x - margin < x < cam_x + self.view_w + margin
+                      and cam_y - margin < y < cam_y + self.view_h + margin)]
+        # герой носит с собой немного света, иначе ночью не видно, куда идти
+        lights.append((p["x"], p["y"] - 0.2, 3.2, (176, 186, 226), 1.6))
+        self.light.render(self.logical, phase, cam_x, cam_y, lights,
+                          enabled=bool(g.settings.get("atmosphere", True)))
 
     # ----------------------------------------------------------------- tiles
     def draw_tiles(self, cam_x: float, cam_y: float) -> None:
@@ -988,6 +1030,31 @@ class Renderer:
         screen.blit(self.text(self.font_small, 
             f"Атака {int(st['atk'])}   Защита {int(st['def'])}   Крит {st['crit_chance']:.0f}%",
             True, (232, 200, 170)), (S(120), S(88)))
+
+        # время суток: без индикатора игрок не понимает, почему темнеет
+        if g.settings.get("atmosphere", True):
+            ph = self.light.forced_phase
+            if ph is None:
+                ph = (lighting.START_PHASE + g.time / lighting.DAY_LENGTH) % 1.0
+            bw, bh = S(158), S(40)
+            bx, by = self.width - bw - S(12), S(10)
+            self.panel(screen, (bx, by, bw, bh), radius=S(6))
+            cx, cy, rr = bx + S(22), by + bh // 2, S(9)
+            if lighting.darkness(ph) < 0.42:
+                pygame.draw.circle(screen, (255, 212, 104), (cx, cy), rr)
+                pygame.draw.circle(screen, (255, 244, 196), (cx - S(2), cy - S(2)),
+                                   max(1, S(3)))
+            else:
+                pygame.draw.circle(screen, (216, 228, 255), (cx, cy), rr)
+                pygame.draw.circle(screen, (140, 156, 196), (cx + S(3), cy - S(3)),
+                                   max(2, S(6)))
+                pygame.draw.circle(screen, (12, 14, 22), (cx + S(7), cy - S(6)),
+                                   max(2, S(6)))
+            screen.blit(self.text(self.font_small, lighting.phase_name(ph), True,
+                                  (232, 240, 252)), (bx + S(42), by + S(3)))
+            hours = ph * 24.0
+            screen.blit(self.text(self.font_tiny, f"{int(hours):02d}:{int(hours % 1 * 60):02d}",
+                                  True, (150, 168, 190)), (bx + S(42), by + S(22)))
 
         # minimap + region, in their own panel so nothing overlaps
         show_minimap = g.settings.get("minimap", True)
