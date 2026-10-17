@@ -126,6 +126,11 @@ ITEMS: dict[str, dict] = {
     "soul": _it("Осколок души", "material", "soul", "Холодный на ощупь.", 45, stack=10),
     "cloth": _it("Обрывок ткани", "material", "cloth", "Годится на бинты.", 4, stack=20),
     "wood": _it("Древесина", "material", "wood", "Плотное полено.", 5, stack=20),
+    "leaf": _it("Лист дуба", "material", "leaf", "Пахнет смолой и летом.", 2, stack=20),
+    "berry": _it("Лесные ягоды", "consumable", "berry", "Сладкие ягоды: +12 здоровья.", 6,
+                 stack=20, heal=12),
+    "flower": _it("Полевой цветок", "material", "flower", "Знахарка платит за такие.", 8,
+                  stack=20),
     "stone": _it("Камень", "material", "stone", "Серый булыжник.", 3, stack=20),
     "scroll": _it("Свиток чар", "material", "scroll", "Непонятные письмена.", 55, stack=10),
     # ---------------------------------------------------------------- quests

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless playtest for Pixel RPG 2.0 — fights, loots, trades and learns.
+"""Headless playtest for Pixel RPG 2.1 — fights, loots, trades and learns.
 
 Walks to the nearest hostile monster, attacks, casts abilities, picks up loot,
 sells everything at the merchant, spends skill points on the oak and renders every
@@ -43,6 +43,9 @@ def main(frames: int = 3000) -> int:
     stuck = 0
     last = (game.player["x"], game.player["y"])
     sold = 0
+    harvested = 0
+    quests_taken = 0
+    quests_done = 0
 
     try:
         i = 0
@@ -74,6 +77,25 @@ def main(frames: int = 3000) -> int:
                 game.overlay = None
             if i % 900 == 0:
                 game.overlay = "inventory"
+                renderer.draw(screen)
+                game.overlay = None
+            # take work from the villagers and hand in whatever is finished
+            if i % 300 == 0:
+                for n in game.npcs:
+                    for q in game.available_quests(n.get("kind", ""))[:2]:
+                        if game.accept_quest(q["id"]):
+                            quests_taken += 1
+                    for q in game.ready_quests(n.get("kind", "")):
+                        if "сдано" in game.turn_in_quest(q["id"]):
+                            quests_done += 1
+            # harvest whatever is in reach
+            if i % 45 == 0:
+                node = game.nearest_node()
+                if node:
+                    game.harvest(node)
+                    harvested += 1
+            if i % 150 == 0:
+                game.overlay = "quests"
                 renderer.draw(screen)
                 game.overlay = None
 
@@ -125,10 +147,13 @@ def main(frames: int = 3000) -> int:
     p = game.player
     print(f"playtest: {frames} frames rendered | kills {kills} | level {p['level']} | "
           f"gold {gold_start} -> {p['gold']} | sold {sold} trades | "
+          f"harvested {harvested} nodes | quests {quests_taken} taken, {quests_done} done | "
           f"skills {learned_start} -> {len(p['learned'])}/{len(SK.SKILLS)} | "
           f"mobs alive {sum(1 for m in game.mobs if m['alive'])} | "
           f"regions {len(game.visited)}/{len(game.world.regions)} | hp "
           f"{p['hp']:.0f}/{game.stats()['hp_max']:.0f}")
+    if quests_done < 1:
+        print("PLAYTEST WARNING: no quest was completed")
     print("PLAYTEST OK")
     pygame.quit()
     return 0

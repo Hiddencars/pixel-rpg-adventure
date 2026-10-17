@@ -28,15 +28,15 @@ import math
 
 # --------------------------------------------------------------- branches
 BRANCHES = [
-    {"id": "blade", "name": "Клинок", "color": (226, 96, 84), "angle": -58,
+    {"id": "blade", "name": "Клинок", "color": (226, 96, 84), "angle": -45,
      "desc": "Сила оружия: урон, критические удары, размашистые атаки."},
-    {"id": "guard", "name": "Оплот", "color": (150, 178, 226), "angle": -29,
+    {"id": "guard", "name": "Оплот", "color": (150, 178, 226), "angle": -22.5,
      "desc": "Стойкость: броня, здоровье, отражение урона, блок."},
     {"id": "arcane", "name": "Чары", "color": (176, 140, 236), "angle": 0,
      "desc": "Магия: огонь, лёд, мана и заклинания по площади."},
-    {"id": "wild", "name": "Чаща", "color": (128, 200, 122), "angle": 29,
+    {"id": "wild", "name": "Чаща", "color": (128, 200, 122), "angle": 22.5,
      "desc": "Охота: скорость, ловкость, яды и звери-союзники."},
-    {"id": "life", "name": "Исток", "color": (238, 196, 110), "angle": 58,
+    {"id": "life", "name": "Исток", "color": (238, 196, 110), "angle": 45,
      "desc": "Жизнь: лечение, регенерация, золото и удача в добыче."},
 ]
 
@@ -253,18 +253,55 @@ def children_of(sid: str) -> list[dict]:
     return [s for s in SKILLS if sid in s["req"]]
 
 
-def position_of(skill: dict) -> tuple[float, float]:
-    """Normalised position of a node on the oak canvas (0,0 = top-left)."""
+_TIER_BASE = 0.44           # the trunk is bare: the first tier sits well above it
+_TIER_STEP = 0.078          # distance between tiers (in tree units)
+_LANE_ANGLE = 6.5           # degrees between the three lanes of a tier
+_LANE_RADIAL = (-0.022, 0.0, 0.022)   # per-lane radial offset (inner, centre, outer)
+_STAGGER = 0.030            # odd branches start further out, so neighbouring cones
+                            # never line up radially
+_MARGIN = 0.035
+
+_BRANCH_INDEX = {b["id"]: i for i, b in enumerate(BRANCHES)}
+
+
+def _raw_position(skill: dict) -> tuple[float, float]:
     if skill["branch"] == "root":
-        return 0.5, 0.94
+        return 0.5, 0.95
     branch = next(b for b in BRANCHES if b["id"] == skill["branch"])
     tier, lane = skill["tier"], skill["lane"]
-    dist = 0.085 + 0.108 * (tier - 1) + (0.018 if lane != 1 else 0.0)
-    ang = math.radians(branch["angle"] + (lane - 1) * 15.0)
-    jitter = ((hash(skill["id"]) % 100) / 100.0 - 0.5) * 0.012
-    x = 0.5 + math.sin(ang) * dist + jitter
-    y = 0.94 - math.cos(ang) * dist - (0.02 if lane == 1 else 0.0)
-    return max(0.04, min(0.96, x)), max(0.05, min(0.97, y))
+    radius = (_TIER_BASE + _TIER_STEP * (tier - 1) + _LANE_RADIAL[lane]
+              + (_STAGGER if _BRANCH_INDEX[branch["id"]] % 2 else 0.0))
+    ang = math.radians(branch["angle"] + (lane - 1) * _LANE_ANGLE)
+    return 0.5 + math.sin(ang) * radius, 0.95 - math.cos(ang) * radius
+
+
+# Raw positions spread far past the unit square, so they are normalised once into
+# it: that keeps the maximum possible distance between neighbouring nodes.
+_RAW = {s["id"]: _raw_position(s) for s in SKILLS}
+_XS = [p[0] for p in _RAW.values()]
+_YS = [p[1] for p in _RAW.values()]
+_MIN_X, _MAX_X = min(_XS), max(_XS)
+_MIN_Y, _MAX_Y = min(_YS), max(_YS)
+
+
+def position_of(skill: dict) -> tuple[float, float]:
+    """Normalised position of a node on the oak canvas (0,0 = top-left, 1,1 = bottom-right)."""
+    x, y = _RAW[skill["id"]]
+    nx = _MARGIN + (x - _MIN_X) / (_MAX_X - _MIN_X) * (1 - _MARGIN * 2)
+    ny = _MARGIN + (y - _MIN_Y) / (_MAX_Y - _MIN_Y) * (1 - _MARGIN * 2)
+    return max(0.0, min(1.0, nx)), max(0.0, min(1.0, ny))
+
+
+def min_node_gap() -> float:
+    """Smallest distance between any two nodes — used to prove the tree is readable."""
+    pts = [position_of(s) for s in SKILLS]
+    best = 9.9
+    for i, a in enumerate(pts):
+        for b in pts[i + 1:]:
+            d = math.hypot(a[0] - b[0], a[1] - b[1])
+            if d < best:
+                best = d
+    return best
 
 
 def requirements_met(learned: set[str], skill: dict) -> bool:
@@ -328,6 +365,9 @@ def validate() -> list[str]:
         x, y = position_of(s)
         if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
             problems.append(f"{s['id']} position {x:.2f},{y:.2f} outside the canvas")
+    gap = min_node_gap()
+    if gap < 0.034:
+        problems.append(f"nodes are packed too tightly: closest pair is {gap:.3f} apart")
     return problems
 
 
@@ -337,6 +377,10 @@ if __name__ == "__main__":
     print(f"  passive: {sum(1 for s in SKILLS if s['kind'] == 'passive')}, "
           f"active: {sum(1 for s in SKILLS if s['kind'] == 'active')}")
     print(f"  total cost of everything: {sum(s['cost'] for s in SKILLS)}")
+    print(f"  closest node pair: {min_node_gap():.3f} of the canvas")
+    xs = [position_of(s)[0] for s in SKILLS]
+    ys = [position_of(s)[1] for s in SKILLS]
+    print(f"  tree fills x {min(xs):.2f}..{max(xs):.2f}, y {min(ys):.2f}..{max(ys):.2f}")
     print("problems:", len(issues))
     for p in issues:
         print("  -", p)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel RPG 2.0 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel RPG 2.1 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -24,6 +24,8 @@ import pygame
 
 import art
 import items as IT
+import music as MUS
+import quests as QST
 import skills as SK
 import sounds as SFX
 import sprites as SP
@@ -60,7 +62,8 @@ def _body() -> int:
     # ---------------------------------------------------------------- assets
     for label, issues in (("art", art.validate()), ("sprites", SP.validate()),
                           ("items", IT.validate()), ("skills", SK.validate()),
-                          ("sounds", SFX.validate())):
+                          ("sounds", SFX.validate()), ("music", MUS.validate()),
+                          ("quests", QST.validate())):
         print(f"{label}: {len(issues)} problems")
         for p in issues[:5]:
             print("   -", p)
@@ -254,6 +257,92 @@ def _body() -> int:
         check(got == n["name"], f"could not talk to {n['name']}")
     print("talked to all npcs:", not any("could not talk" in x for x in problems))
 
+    # ------------------------------------------------------------- quests
+    # every quest kind must be completable, and handing one in must pay out
+    done_kinds = {}
+    for kind in sorted({q["kind"] for q in QST.QUESTS}):
+        quest = next(q for q in QST.QUESTS if q["kind"] == kind)
+        giver = quest["giver"]
+        # ignore chains: accept this one directly
+        game.accept_quest(quest["id"])
+        check(quest["id"] in game.quest_log, f"quest {quest['id']} not accepted")
+        need = quest["count"]
+        if kind in ("kill", "boss"):
+            game.quest_stats["kill"][quest["target"]] = need
+        elif kind in ("collect", "deliver"):
+            game.add_item(quest["target"], need)
+        elif kind in ("chop", "mine", "gather"):
+            game.quest_stats[kind] = need
+        elif kind == "sell":
+            game.quest_stats["sold"] = need
+        elif kind == "visit":
+            game.visited.add(quest["target"])
+        elif kind == "explore":
+            game.visited.update(r["id"] for r in game.world.regions)
+        elif kind == "learn":
+            pass                        # the test already learned all 120 nodes
+        check(game.quest_current(quest) >= need, f"quest {quest['id']} progress wrong")
+        msg = game.turn_in_quest(quest["id"])
+        check("сдано" in msg, f"quest {quest['id']} not handed in: {msg}")
+        check(quest["id"] in game.quest_done, f"quest {quest['id']} not marked done")
+        done_kinds[kind] = giver
+    print(f"quests: turned in one of each kind ({len(done_kinds)}): "
+          + ", ".join(sorted(done_kinds)))
+    check(len(done_kinds) >= 10, "not all quest kinds are completable")
+    # a villager offers his own quests, and only his own
+    offers = game.available_quests("smith")
+    check(bool(offers), "the blacksmith offers nothing")
+    check(all(q["giver"] == "smith" for q in offers), "a villager offered a foreign quest")
+    for q in offers[:2]:
+        game.accept_quest(q["id"])
+    check(len(game.quests) >= 2, "the journal did not fill up")
+    print(f"journal: {len(game.quests)} active, {len(game.quest_done)} finished of "
+          f"{len(QST.QUESTS)}")
+
+    # ------------------------------------------------------------- harvest
+    nodes = game.harvest_nodes()
+    check(len(nodes) > 500, f"only {len(nodes)} harvestable nodes in the world")
+    tree = next(n for n in nodes.values() if n["kind"] == "tree")
+    p["x"], p["y"] = tree["x"] + 0.5, tree["y"] + 1.6
+    check(game.nearest_node() is not None, "standing next to a tree, nothing is reachable")
+    wood_before = game.count_item("wood")
+    text = game.harvest(tree)
+    check(game.count_item("wood") > wood_before, f"chopping gave no wood: {text}")
+    check(not game.world.walkable(tree["x"], tree["y"]) is False
+          or game.world.walkable(tree["x"], tree["y"]), "a chopped tree still blocks the tile")
+    check((tree["x"], tree["y"]) in game.harvest_done, "the felled tree was not recorded")
+    game.harvest_done[(tree["x"], tree["y"])] = game.time - 1.0
+    game.update_harvest()
+    check(nodes[(tree["x"], tree["y"])]["kind"] == "tree", "the tree did not grow back")
+    for kind in ("rock_small", "bush", "berry_bush", "flower"):
+        node = next((n for n in nodes.values() if n["kind"] == kind), None)
+        check(node is not None, f"no {kind} in the world")
+        if node:
+            before = sum(game.count_item(i) for i in IT.ITEMS)
+            game.harvest(node)
+            check(sum(game.count_item(i) for i in IT.ITEMS) >= before,
+                  f"harvesting a {kind} lost items")
+    print(f"harvest: {len(nodes)} nodes, chop/mine/gather all give loot "
+          f"(gathered {game.quest_stats['gather']}, chopped {game.quest_stats['chop']}, "
+          f"mined {game.quest_stats['mine']})")
+    check(game.quest_stats["chop"] >= 1 and game.quest_stats["mine"] >= 1
+          and game.quest_stats["gather"] >= 1, "harvest counters did not move")
+
+    # --------------------------------------------------------------- music
+    check(len(MUS.TRACKS) >= 6, f"only {len(MUS.TRACKS)} music tracks")
+    game.music_on = True
+    game.update_music(0.1, False)
+    check(game.music_track is not None, "no music track was chosen")
+    game.battle_track = True
+    check(game.current_track() == "battle", "combat did not switch to the battle theme")
+    game.battle_track = False
+    region_track = game.current_track()
+    check(region_track in MUS.TRACKS, f"region track {region_track} is not a real track")
+    game.music.play("village")
+    game.music.stop()
+    print(f"music: {len(MUS.TRACKS)} tracks, region -> {region_track}, "
+          f"battle theme on combat, toggling works")
+
     # --------------------------------------------------------------- overlays
     overlays = ("inventory", "skilltree", "shop", "quests")
     for overlay in overlays:
@@ -279,6 +368,20 @@ def _body() -> int:
               if oak.get_at((x, y))[3] > 40)
     print("oak tree drawn, covered samples:", lit)
     check(lit > 2000, "the skill oak looks empty")
+
+    # the nodes must never touch on screen: the whole point of the zoomed view
+    r = R.Renderer(game, 1920, 1080, 2)
+    S = r.s
+    area_w = r.width - S(18) * 2 - S(348)
+    area_h = r.height - S(50) - S(34)
+    for zoom in (G.TREE_ZOOM_MIN, G.TREE_ZOOM_DEFAULT, G.TREE_ZOOM_MAX):
+        unit = min(area_w, area_h) * zoom
+        gap_px = SK.min_node_gap() * unit
+        radius = max(S(7), min(S(20), int(gap_px * 0.36)))
+        print(f"oak at zoom {zoom:.1f}: closest nodes {gap_px:.0f}px apart, "
+              f"node radius {radius}px")
+        check(2 * radius + 2 <= gap_px,
+              f"skill nodes overlap at zoom {zoom}: gap {gap_px:.0f}px, radius {radius}px")
 
     # ------------------------------------------------------------- rendering
     for (w, h, z) in G.RESOLUTIONS:

@@ -15,7 +15,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 GAME = HERE / "game.py"
 NAME = "PixelRPG"
-MODULES = ("art", "sprites", "items", "skills", "sounds", "world", "render", "selftest")
+MODULES = ("art", "sprites", "items", "skills", "sounds", "music", "quests", "world",
+           "render", "selftest")
 
 
 def run_selftest() -> None:

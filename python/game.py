@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel RPG Adventure 2.0 — Python / pygame-ce.
+"""Pixel RPG Adventure 2.1 — Python / pygame-ce.
 
-Version 2.0 is a full content and presentation pass:
+Version 2.1 adds the living island: music, fifty quests, harvesting and a
+rebuilt look.  Version 2.0 was the content pass:
   * map 250x128 tiles (5x the area) with biomes, nine regions and landmarks
   * 16 monster species + 3 farm animals, all with 64x64 shaded sprites
   * 50 items, per-species loot tables and a merchant who buys and sells
@@ -27,6 +28,8 @@ import pygame
 
 import art
 import items as IT
+import music as MUS
+import quests as QST
 import skills as SK
 import sounds as SFX
 import sprites as SP
@@ -39,6 +42,38 @@ FPS = 60
 BASE_UI_WIDTH = 1248
 INV_SLOTS = 24
 HOTBAR_KEYS = 9
+# the oak screen: zoomed in enough that neighbouring nodes never touch
+TREE_ZOOM_MIN = 1.0
+TREE_ZOOM_DEFAULT = 2.0
+TREE_ZOOM_MAX = 2.8
+TREE_ZOOM_STEP = 0.15
+
+# ------------------------------------------------------- the living island
+# What can be harvested in the world: decor kind -> (quest stat, drops, verb).
+# Drops are (item_id, count); the second entry is a bonus with its own chance.
+HARVEST: dict[str, tuple] = {
+    "bush":       ("gather", [("leaf", 2), ("herb", 1)], 0.45, "Собрано"),
+    "berry_bush": ("gather", [("berry", 2), ("leaf", 1)], 0.35, "Собрано"),
+    "flower":     ("gather", [("flower", 1), ("herb", 1)], 0.30, "Собрано"),
+    "rock_small": ("mine",   [("stone", 2), ("ore_iron", 1)], 0.35, "Добыто"),
+    "stump":      ("chop",   [("wood", 1)], 0.0, "Срублено"),
+}
+TREE_KINDS = ("oak", "pine", "birch", "tree")
+HARVEST_RANGE = 1.9                 # tiles you can reach a bush or a tree from
+REGROW = {"tree": 110.0, "bush": 55.0, "berry_bush": 70.0,
+          "flower": 60.0, "rock_small": 95.0, "stump": 0.0}
+
+MUSIC_VOLUME = 0.42                 # noticeable, but well under the effects
+REGION_TRACK = {
+    "village": "village", "meadow": "forest", "forest": "forest",
+    "swamp": "swamp", "highlands": "highlands", "ruins": "ruins",
+    "graveyard": "graveyard", "camp": "forest", "shore": "village",
+}
+COMBAT_RANGE = 7.0                  # hostiles this close start the battle theme
+COMBAT_HOLD = 6.0                   # seconds of calm before the region theme returns
+GIVER_NAMES = {"peasant": "Крестьянину", "farmer": "Фермеру", "smith": "Кузнецу",
+               "merchant": "Торговцу", "elder": "Старейшине", "guard": "Стражнику",
+               "healer": "Знахарке"}
 
 RESOLUTIONS = [(960, 540, 1), (1280, 720, 2), (1366, 768, 2),
                (1600, 900, 2), (1920, 1080, 2)]
@@ -152,12 +187,27 @@ class Game:
         self.shop_tab = "sell"                 # sell | buy
         self.shop_cursor = 0
         self.tree_cursor = "root"
+        self.tree_zoom = TREE_ZOOM_DEFAULT
+        self.tree_cam = [0.5, 0.5]
         self.tree_offset = (0.0, 0.0)
-        self.quests: list[dict] = []
+        self.quests: list[dict] = []          # accepted quests, with live progress
+        self.quest_log: list[str] = []        # accepted ids, in order
+        self.quest_done: set[str] = set()
+        self.quest_ready: set[str] = set()
+        self.quest_stats = {"kill": {}, "chop": 0, "mine": 0, "gather": 0, "sold": 0}
+        self.harvest_done: dict[tuple[int, int], float] = {}   # node -> ready time
+        self.nodes: dict[tuple[int, int], dict] | None = None
         self.merchant_stock: dict[str, int] = dict(IT.SHOP_STOCK)
         self.reach: set[tuple[int, int]] = set()
         self.kills: dict[str, int] = {}
         self.deaths = 0
+
+        self.music_on = sound
+        self.music = MUS.build_player(sound)
+        self.music.set_volume(MUSIC_VOLUME)
+        self.music_track: str | None = None
+        self.combat_t = 0.0
+        self.battle_track = False
 
         self.spawn_npcs()
         self.spawn_mobs()
@@ -244,11 +294,21 @@ class Game:
         self.toast("Изучено: " + skill["name"], "#9ad7ff")
         if skill["effect"]["key"] == "hp_max":
             self.player["hp"] = min(self.hp_max(), self.player["hp"] + skill["effect"]["value"])
-        self.bump_quest("q_skills", 1)
+        self.refresh_quests()
         return True
 
     def tree_nodes(self) -> list[dict]:
         return SK.SKILLS
+
+    def tree_zoom_by(self, step: float) -> None:
+        """Zoom the oak view (the camera follows the cursor, so this is all a player needs)."""
+        self.tree_zoom = max(TREE_ZOOM_MIN, min(TREE_ZOOM_MAX, self.tree_zoom + step))
+
+    def tree_show_all(self) -> None:
+        self.tree_zoom = TREE_ZOOM_MIN
+        node = SK.by_id(self.tree_cursor) or SK.ROOT
+        self.tree_cam = [0.5, 0.5]
+        self.sound("menu_select", 0.4)
 
     def tree_move(self, dx: int, dy: int) -> None:
         """Move the skill-tree cursor to the nearest node in that direction."""
@@ -505,7 +565,6 @@ class Game:
             self.player["gold"] -= price
             self.merchant_stock[item_id] -= 1
             self.sound("buy")
-            self.bump_quest("q_trade", 1)
             return f"Куплено: {data['name']} за {price}"
         if data["kind"] == "quest":
             self.sound("error", 0.5)
@@ -514,7 +573,8 @@ class Game:
             return "Предмета нет"
         self.player["gold"] += price
         self.sound("sell")
-        self.bump_quest("q_trade", 1)
+        self.quest_stats["sold"] = self.quest_stats.get("sold", 0) + 1
+        self.refresh_quests()
         return f"Продано: {data['name']} за {price} золота"
 
     def sell_all_junk(self) -> str:
@@ -534,32 +594,253 @@ class Game:
             return "Нет материалов на продажу"
         self.player["gold"] += total
         self.sound("sell")
-        self.bump_quest("q_trade", sold)
+        self.quest_stats["sold"] = self.quest_stats.get("sold", 0) + sold
+        self.refresh_quests()
         return f"Продано {sold} материалов за {total} золота"
 
     # ----------------------------------------------------------------- setup
+    # ------------------------------------------------------------- quests
+    # The fifty quests live in quests.py, each owned by one villager. Progress is
+    # derived from world statistics, so nothing has to be counted twice.
     def init_quests(self) -> None:
-        self.quests = [
-            {"id": "q_goblins", "title": "Гоблины в лесах",
-             "desc": "Одолей 5 гоблинов.", "goal": 5, "progress": 0, "done": False,
-             "xp": 40, "gold": 25},
-            {"id": "q_hunt", "title": "Опасная дичь",
-             "desc": "Победи волка, кабана и медведя.", "goal": 3, "progress": 0,
-             "done": False, "xp": 70, "gold": 40},
-            {"id": "q_undead", "title": "Покой для павших",
-             "desc": "Упокой 4 скелетов или призраков.", "goal": 4, "progress": 0,
-             "done": False, "xp": 80, "gold": 50},
-            {"id": "q_trade", "title": "Торговое дело",
-             "desc": "Продай или купи 10 предметов у торговца.", "goal": 10,
-             "progress": 0, "done": False, "xp": 45, "gold": 30},
-            {"id": "q_skills", "title": "Путь силы",
-             "desc": "Изучи 8 навыков на дубе.", "goal": 8, "progress": 0, "done": False,
-             "xp": 60, "gold": 35},
-            {"id": "q_explore", "title": "Разведка земель",
-             "desc": "Посети все девять областей острова.", "goal": 9, "progress": 0,
-             "done": False, "xp": 120, "gold": 80},
-        ]
+        self.quest_log = []
+        self.quest_done = set()
+        self.quest_ready = set()
+        self.quest_stats = {"kill": {}, "chop": 0, "mine": 0, "gather": 0, "sold": 0}
+        self.quests = []
         self.visited: set[str] = set()
+
+    def quest_current(self, q: dict) -> int:
+        kind, target = q["kind"], q["target"]
+        if kind in ("kill", "boss"):
+            return self.quest_stats["kill"].get(target, 0)
+        if kind in ("collect", "deliver"):
+            return self.count_item(target)
+        if kind == "sell":
+            return self.quest_stats.get("sold", 0)
+        if kind in ("chop", "mine", "gather"):
+            return self.quest_stats.get(kind, 0)
+        if kind == "learn":
+            return len(self.player["learned"])
+        if kind == "visit":
+            return 1 if target in self.visited else 0
+        if kind == "explore":
+            return len(self.visited)
+        return 0
+
+    def quest_state(self, q: dict) -> str:
+        if q["id"] in self.quest_done:
+            return "done"
+        if self.quest_current(q) >= q["count"]:
+            return "ready"
+        return "active"
+
+    def refresh_quests(self) -> None:
+        """Rebuild the journal from the accepted ids and the live world statistics."""
+        self.quests = []
+        for qid in self.quest_log:
+            q = QST.by_id(qid)
+            if not q:
+                continue
+            cur = self.quest_current(q)
+            self.quests.append({**q, "goal": q["count"], "progress": min(cur, q["count"]),
+                                "done": False, "ready": cur >= q["count"],
+                                "state": "ready" if cur >= q["count"] else "active"})
+        self.quests.sort(key=lambda q: (not q["ready"], -q["progress"] / max(1, q["goal"])))
+
+    def accept_quest(self, qid: str) -> bool:
+        q = QST.by_id(qid)
+        if not q or qid in self.quest_log or qid in self.quest_done:
+            return False
+        self.quest_log.append(qid)
+        self.refresh_quests()
+        self.sound("menu_select")
+        self.toast(f"Взято задание: {q['title']}", "#ffe066")
+        return True
+
+    def turn_in_quest(self, qid: str) -> str:
+        q = QST.by_id(qid)
+        if not q or qid not in self.quest_log:
+            return "Это задание не взято"
+        if self.quest_current(q) < q["count"]:
+            return "Задание ещё не выполнено"
+        if q["kind"] in ("collect", "deliver") and q["target"]:
+            self.remove_item(q["target"], q["count"])
+        xp = int(q["xp"] * self.stats()["xp_gain"])
+        self.player["xp"] += xp
+        self.player["gold"] += q["gold"]
+        if q.get("reward"):
+            self.add_item(q["reward"], 1)
+        self.quest_done.add(qid)
+        self.quest_ready.discard(qid)
+        self.quest_log.remove(qid)
+        self.refresh_quests()
+        self.sound("quest_done")
+        self.check_level()
+        extra = ""
+        if q.get("reward") and IT.ITEMS.get(q["reward"]):
+            extra = f", {IT.ITEMS[q['reward']]['name']}"
+        return f"Задание сдано: {q['title']} (+{xp} XP, +{q['gold']} золота{extra})"
+
+    def available_quests(self, giver: str) -> list[dict]:
+        done = set(self.quest_done) | set(self.quest_log)
+        return QST.available(giver, done)
+
+    def ready_quests(self, giver: str) -> list[dict]:
+        out = []
+        for qid in self.quest_log:
+            q = QST.by_id(qid)
+            if q and q["giver"] == giver and self.quest_current(q) >= q["count"]:
+                out.append(q)
+        return out
+
+    def update_quests(self) -> None:
+        region = self.region_at(self.player["x"], self.player["y"])
+        if region and region["id"] not in self.visited:
+            self.visited.add(region["id"])
+            self.toast("Новая область: " + region["name"], "#b6e3a0")
+        for qid in list(self.quest_log):
+            q = QST.by_id(qid)
+            if not q or qid in self.quest_ready:
+                continue
+            if self.quest_current(q) >= q["count"]:
+                self.quest_ready.add(qid)
+                npc = GIVER_NAMES.get(q["giver"], "жителя деревни")
+                self.toast(f"Задание готово: {q['title']} — вернись к {npc}", "#b6e3a0")
+                self.sound("menu_select", 0.6)
+        self.refresh_quests()
+
+    # ------------------------------------------------- harvesting the island
+    def harvest_nodes(self) -> dict[tuple[int, int], dict]:
+        """Every bush, flower, rock and tree you can interact with, keyed by tile."""
+        if self.nodes is not None:
+            return self.nodes
+        nodes: dict[tuple[int, int], dict] = {}
+        for d in self.world.decor:
+            if d["kind"] in HARVEST:
+                nodes[(d["x"], d["y"])] = {"x": d["x"], "y": d["y"], "kind": d["kind"],
+                                           "ref": d}
+        for o in self.world.objects:
+            if o["kind"].startswith(TREE_KINDS):
+                nodes[(o["x"], o["y"])] = {"x": o["x"], "y": o["y"], "kind": "tree",
+                                           "ref": o}
+        self.nodes = nodes
+        return nodes
+
+    def nearest_node(self, max_dist: float = HARVEST_RANGE) -> dict | None:
+        px, py = self.player["x"], self.player["y"]
+        best, best_d = None, max_dist
+        for (nx, ny), node in self.harvest_nodes().items():
+            if self.harvest_done.get((nx, ny), 0.0) > self.time:
+                continue
+            d = math.hypot(nx + 0.5 - px, ny + 0.5 - py)
+            if d < best_d:
+                best, best_d = node, d
+        return best
+
+    def harvest(self, node: dict) -> str:
+        """Chop a tree, mine a rock, pick a bush: the island answers back."""
+        kind = node["kind"]
+        stat, drops, chance, verb = HARVEST.get(kind, (None, [], 0.0, "Собрано"))
+        if kind == "tree":
+            stat, drops, chance, verb = "chop", [("wood", 2), ("leaf", 1)], 0.35, "Срублено"
+        if stat is None:
+            return ""
+        gained: list[str] = []
+        for i, (item_id, count) in enumerate(drops):
+            if i and self.rng.random() > chance:
+                continue
+            n = count + (1 if i == 0 and self.rng.random() < 0.3 else 0)
+            if self.add_item(item_id, n):
+                gained.append(f"{IT.ITEMS[item_id]['name']} x{n}")
+        self.quest_stats[stat] = self.quest_stats.get(stat, 0) + 1
+        key = (node["x"], node["y"])
+        self.harvest_done[key] = self.time + REGROW.get(kind, 60.0)
+        ref = node["ref"]
+        if kind == "tree":
+            self.world.solid.discard(key)          # the tile opens up
+            ref["kind"] = "stump"
+            node["kind"] = "stump"
+            node["ref"] = ref
+            self.sound("hit_metal", 0.7)
+            self.add_particle(node["x"] + 0.5, node["y"] + 0.5, (150, 176, 96), 10, 2.6)
+        elif kind == "rock_small":
+            self.sound("hit_metal", 0.8)
+            self.add_particle(node["x"] + 0.5, node["y"] + 0.5, (168, 168, 176), 8, 2.4)
+        else:
+            self.sound("pickup", 0.7)
+            self.add_particle(node["x"] + 0.5, node["y"] + 0.5, (120, 190, 96), 7, 2.0)
+        self.sound("hit", 0.5)
+        text = f"{verb}: " + (", ".join(gained) if gained else "пусто")
+        self.toast(text, "#b6e3a0")
+        self.refresh_quests()
+        return text
+
+    def update_harvest(self) -> None:
+        """Bring back whatever was picked after its regrowth time."""
+        for key, ready in list(self.harvest_done.items()):
+            if ready > self.time:
+                continue
+            node = self.harvest_nodes().get(key)
+            del self.harvest_done[key]
+            if not node:
+                continue
+            ref = node["ref"]
+            if node["kind"] == "stump":             # the stump becomes a tree again
+                ref["kind"] = self.rng.choice(("oak", "pine", "birch"))
+                self.world.solid.add(key)
+                node["kind"] = "tree"
+
+    # ---------------------------------------------------------------- music
+    def current_track(self) -> str:
+        if self.battle_track:
+            return "battle"
+        region = self.region_at(self.player["x"], self.player["y"])
+        return REGION_TRACK.get(region["id"] if region else "", "meadow")
+
+    def update_music(self, dt: float, in_combat: bool) -> None:
+        if not self.music_on:
+            return
+        if in_combat:
+            self.combat_t = COMBAT_HOLD
+        else:
+            self.combat_t = max(0.0, self.combat_t - dt)
+        self.battle_track = self.combat_t > 0.0
+        track = self.current_track()
+        if track != self.music_track:
+            self.music.play(track, 900)
+            self.music_track = track
+
+    def toggle_music(self) -> str:
+        self.music_on = not self.music_on
+        if self.music_on:
+            self.music.set_volume(MUSIC_VOLUME)
+            self.music_track = None
+            self.music.play(self.current_track(), 400)
+            return "Музыка включена"
+        self.music.stop(400)
+        self.music_track = None
+        return "Музыка выключена"
+
+    def next_track(self) -> str:
+        """Cycle the soundtrack, so the player can hear all of it."""
+        names = self.music.names()
+        if not names:
+            return "Музыки нет"
+        try:
+            i = (names.index(self.music_track) + 1) % len(names)
+        except ValueError:
+            i = 0
+        self.music_on = True
+        self.music.set_volume(MUSIC_VOLUME)
+        self.music.play(names[i], 300)
+        self.music_track = names[i]
+        self.battle_track = False
+        self.combat_t = 0.0
+        title = MUS.TRACKS.get(names[i], {}).get("title", names[i])
+        return f"Мелодия: {title}"
+
+    # ---------------------------------------------------------------- combat
 
     def spawn_npcs(self) -> None:
         vx, vy = VILLAGE_CENTER
@@ -695,6 +976,16 @@ class Game:
             ent["y"] = ny
 
     # ---------------------------------------------------------------- update
+    def in_combat(self) -> bool:
+        """True while a hostile is close enough to matter (drives the battle theme)."""
+        px, py = self.player["x"], self.player["y"]
+        for m in self.mobs:
+            if not m["alive"] or m.get("friendly"):
+                continue
+            if math.hypot(m["x"] - px, m["y"] - py) <= COMBAT_RANGE:
+                return True
+        return self.player["atk_t"] > 0
+
     def update(self, dt: float, inp: dict) -> None:
         self.frame += 1
         self.time += dt
@@ -704,6 +995,8 @@ class Game:
         self.update_npcs(dt)
         self.update_effects(dt)
         self.update_quests()
+        self.update_harvest()
+        self.update_music(dt, self.in_combat())
 
     def update_player(self, dt: float, inp: dict) -> None:
         p = self.player
@@ -916,29 +1209,6 @@ class Game:
         if region and region["id"] not in self.visited:
             self.visited.add(region["id"])
             self.toast("Новая область: " + region["name"], "#b6e3a0")
-            q = next(q for q in self.quests if q["id"] == "q_explore")
-            q["progress"] = len(self.visited)
-            if q["progress"] >= q["goal"]:
-                self.finish_quest(q)
-
-    def finish_quest(self, q: dict) -> None:
-        if q["done"]:
-            return
-        q["done"] = True
-        xp = int(q["xp"] * self.stats()["xp_gain"])
-        self.player["xp"] += xp
-        self.player["gold"] += q["gold"]
-        self.sound("quest_done")
-        self.toast(f"Квест выполнен: {q['title']} (+{xp} XP)", "#b6e3a0")
-        self.check_level()
-
-    def bump_quest(self, qid: str, amount: int = 1) -> None:
-        q = next((q for q in self.quests if q["id"] == qid), None)
-        if not q or q["done"]:
-            return
-        q["progress"] = min(q["goal"], q["progress"] + amount)
-        if q["progress"] >= q["goal"]:
-            self.finish_quest(q)
 
     # ---------------------------------------------------------------- combat
     def attack(self) -> None:
@@ -1023,12 +1293,9 @@ class Game:
         self.corpses.append({"x": m["x"], "y": m["y"], "kind": m["kind"], "t": 0.0})
         self.add_particle(m["x"], m["y"], "#88ff88", 16, 4.0)
         self.check_level()
-        if m["kind"] in ("goblin", "brute"):
-            self.bump_quest("q_goblins", 1)
-        if m["kind"] in ("wolf", "boar", "bear"):
-            self.bump_quest("q_hunt", 1)
-        if m["kind"] in ("skeleton", "wraith"):
-            self.bump_quest("q_undead", 1)
+        kills = self.quest_stats.setdefault("kill", {})
+        kills[m["kind"]] = kills.get(m["kind"], 0) + 1
+        self.refresh_quests()
         self.respawn_mob(m["kind"])
 
     def respawn_mob(self, kind: str) -> None:
@@ -1079,8 +1346,13 @@ class Game:
         n = self.nearest_npc()
         if n:
             n["dir"] = "left" if self.player["x"] > n["x"] else "right"
+            giver = n.get("kind", "")
+            offers = self.available_quests(giver) if giver else []
+            turns = self.ready_quests(giver) if giver else []
             self.dialog = {"name": n["name"], "line": self.rng.choice(n["lines"]),
-                           "shop": bool(n.get("shop"))}
+                           "shop": bool(n.get("shop")), "giver": giver,
+                           "offers": [q["id"] for q in offers[:3]],
+                           "turns": [q["id"] for q in turns[:3]]}
             self.sound("dialog")
             if n.get("gift") and not n.get("gave"):
                 n["gave"] = True
@@ -1095,7 +1367,36 @@ class Game:
                                          m["y"] - self.player["y"]) < 1.6:
                 self.attack()
                 return
-        self.toast("Рядом никого нет.", "#c8c8d0")
+        node = self.nearest_node()
+        if node:
+            self.harvest(node)
+            return
+        self.toast("Рядом никого и ничего нет.", "#c8c8d0")
+
+    def dialog_take_quest(self, index: int) -> str:
+        """Accept the index-th quest the current villager is offering."""
+        if not self.dialog:
+            return ""
+        offers = self.dialog.get("offers", [])
+        if not 0 <= index < len(offers):
+            return ""
+        qid = offers[index]
+        q = QST.by_id(qid)
+        if not self.accept_quest(qid):
+            return "Это задание уже взято"
+        self.dialog["offers"] = [o for o in offers if o != qid]
+        return f"Задание: {q['title']} — {q['desc']}"
+
+    def dialog_turn_in(self) -> str:
+        """Hand in the first finished quest this villager is waiting for."""
+        if not self.dialog:
+            return ""
+        turns = self.dialog.get("turns", [])
+        if not turns:
+            return ""
+        msg = self.turn_in_quest(turns[0])
+        self.dialog["turns"] = turns[1:]
+        return msg
 
     def open_shop(self) -> None:
         self.overlay = "shop"
@@ -1116,8 +1417,13 @@ class Game:
         try:
             p = dict(self.player)
             p["learned"] = sorted(p["learned"])
-            data = {"version": 4, "player": p, "skill_points": self.skill_points,
-                    "quests": self.quests, "merchant": self.merchant_stock,
+            data = {"version": 5, "player": p, "skill_points": self.skill_points,
+                    "quest_log": self.quest_log, "quest_done": sorted(self.quest_done),
+                    "quest_stats": {**self.quest_stats,
+                                    "kill": dict(self.quest_stats.get("kill", {}))},
+                    "harvest": [[k[0], k[1], round(v, 1)] for k, v in self.harvest_done.items()],
+                    "music_on": self.music_on,
+                    "merchant": self.merchant_stock,
                     "visited": sorted(self.visited), "kills": self.kills,
                     "npcs_met": {n["name"]: n["met"] for n in self.npcs}}
             path.write_text(json.dumps(data, ensure_ascii=False, indent=1),
@@ -1162,10 +1468,25 @@ class Game:
             p["equip"] = {k: (v if v in IT.ITEMS else None)
                           for k, v in equip.items() if k in p["equip"]}
         self.skill_points = int(data.get("skill_points", self.skill_points))
-        for q_new in data.get("quests", []):
-            q = next((q for q in self.quests if q["id"] == q_new.get("id")), None)
-            if q:
-                q.update({k: v for k, v in q_new.items() if k in q})
+        self.quest_log = [q for q in data.get("quest_log", []) if QST.by_id(q)]
+        self.quest_done = {q for q in data.get("quest_done", []) if QST.by_id(q)}
+        stats = data.get("quest_stats")
+        if isinstance(stats, dict):
+            self.quest_stats = {"kill": {k: int(v) for k, v in stats.get("kill", {}).items()},
+                                "chop": int(stats.get("chop", 0)),
+                                "mine": int(stats.get("mine", 0)),
+                                "gather": int(stats.get("gather", 0)),
+                                "sold": int(stats.get("sold", 0))}
+        self.harvest_done = {}
+        for row in data.get("harvest", []):
+            try:
+                x, y, ready = int(row[0]), int(row[1]), float(row[2])
+            except (TypeError, ValueError, IndexError):
+                continue
+            self.harvest_done[(x, y)] = ready
+        if "music_on" in data:
+            self.music_on = bool(data["music_on"])
+        self.refresh_quests()
         stock = data.get("merchant")
         if isinstance(stock, dict):
             self.merchant_stock = {k: int(v) for k, v in stock.items()

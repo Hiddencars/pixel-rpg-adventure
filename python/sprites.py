@@ -56,7 +56,7 @@ def _limb(s, col, x1, y1, x2, y2, w) -> None:
     _ell(s, col, x2, y2, w / 2, w / 2)
 
 
-def _outline(s, col=(26, 22, 30), strength=0.7) -> None:
+def _outline(s, col=(20, 17, 24), strength=0.85) -> None:
     w, h = s.get_size()
     mask = pygame.mask.from_surface(s)
     edge = []
@@ -72,6 +72,30 @@ def _outline(s, col=(26, 22, 30), strength=0.7) -> None:
                 break
     for (x, y) in edge:
         s.set_at((x, y), mix(s.get_at((x, y))[:3], col, strength))
+
+
+def _rim(s, col=(255, 248, 226), strength=0.34) -> None:
+    """Light the upper-left silhouette edge: one key light for every sprite."""
+    w, h = s.get_size()
+    mask = pygame.mask.from_surface(s)
+    lit = []
+    for y in range(h):
+        for x in range(w):
+            if not mask.get_at((x, y)):
+                continue
+            up_open = (y - 1 < 0) or not mask.get_at((x, y - 1))
+            left_open = (x - 1 < 0) or not mask.get_at((x - 1, y))
+            if up_open or left_open:
+                lit.append((x, y))
+    for (x, y) in lit:
+        s.set_at((x, y), mix(s.get_at((x, y))[:3], col, strength))
+
+
+def _finish(s, *, outline=0.85, rim=0.34) -> None:
+    """Every creature ends with the same pass: dark outline, then a rim light."""
+    _outline(s, strength=outline)
+    if rim:
+        _rim(s, strength=rim)
 
 
 def _shadow(s, cx, base_y, w=30, h=10) -> None:
@@ -117,6 +141,20 @@ def _head(s, cx, cy, r, skin, hair, view, *, hat=None, beard=None, ears=None,
             _ell(s, (250, 250, 252), cx + r * 0.42, ey, r * 0.24, r * 0.22)
             _ell(s, (40, 36, 44), cx - r * 0.38, ey, r * 0.13, r * 0.14)
             _ell(s, (40, 36, 44), cx + r * 0.46, ey, r * 0.13, r * 0.14)
+            _ell(s, (255, 255, 255), cx - r * 0.48, ey - r * 0.1, r * 0.06, r * 0.06)
+            _ell(s, (255, 255, 255), cx + r * 0.36, ey - r * 0.1, r * 0.06, r * 0.06)
+        # brows, nose and mouth: the difference between a face and two dots
+        brow = shade(hair, 0.7)
+        w = max(1, int(r * 0.13))
+        pygame.draw.line(s, brow, (cx - r * 0.66, ey - r * 0.36), (cx - r * 0.18, ey - r * 0.46), w)
+        pygame.draw.line(s, brow, (cx + r * 0.66, ey - r * 0.36), (cx + r * 0.18, ey - r * 0.46), w)
+        _ell(s, shade(skin, 0.84), cx, ey + r * 0.34, r * 0.15, r * 0.13)
+        pygame.draw.line(s, shade(skin, 0.6), (cx - r * 0.24, ey + r * 0.64),
+                         (cx + r * 0.24, ey + r * 0.64), max(1, int(r * 0.13)))
+        pygame.draw.line(s, shade(skin, 0.72), (cx - r * 0.5, ey + r * 0.2),
+                         (cx - r * 0.72, ey + r * 0.44), 1)
+        pygame.draw.line(s, shade(skin, 0.72), (cx + r * 0.5, ey + r * 0.2),
+                         (cx + r * 0.72, ey + r * 0.44), 1)
     elif view == "side" and eyes != "none":
         ey = cy + r * 0.12
         col = (250, 240, 140) if eyes == "glow" else (
@@ -166,7 +204,8 @@ def _color(name, fallback=(200, 200, 200)):
 def _humanoid(*, skin="light", hair="brown", shirt="blue", pants="grey",
               boots="brown", view="down", frame=0, hat=None, beard=None,
               ears=None, eyes="normal", build=1.0, cape=None, belt=True,
-              shoulder=None, horns=False, size=1.0, base_y=62, cx=32) -> pygame.Surface:
+              shoulder=None, horns=False, size=1.0, base_y=62, cx=32,
+              decorate=None) -> pygame.Surface:
     """Draw a person/creature-person. frame 0 = idle, 1 = step."""
     s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
     skin_c, hair_c = _color(skin), _color(hair, HAIR["brown"])
@@ -225,36 +264,127 @@ def _humanoid(*, skin="light", hair="brown", shirt="blue", pants="grey",
                  2.2 * sc, 2.2 * sc)
     _head(s, cx, head_cy, r, skin_c, hair_c, view, hat=hat, beard=beard, ears=ears,
           eyes=eyes, horns=horns)
-    _outline(s)
+    if decorate:
+        # lets a monster add its own face and gear at the right coordinates
+        decorate(s, {"cx": cx, "head_cy": head_cy, "r": r, "shoulder_y": shoulder_y,
+                     "hip_y": hip_y, "tw": tw, "size": sc, "view": view,
+                     "skin": skin_c, "shirt": shirt_c})
+    _finish(s)
     return s
 
 
 # ------------------------------------------------------------------- monsters
-def _goblin(frame=0, big=False, view="down") -> pygame.Surface:
-    s = _humanoid(skin="green", hair="black", shirt="rust" if not big else "brown",
-                  pants="leather", boots="brown", view=view, frame=frame,
-                  ears="pointed", eyes="glow" if big else "normal",
-                  build=1.25 if big else 1.0, size=1.16 if big else 0.94,
-                  belt=True)
-    d = pygame.Surface(s.get_size(), pygame.SRCALPHA)
-    d.blit(s, (0, 0))
+def _goblin_face(s, m, *, big=False) -> None:
+    """Long hooked nose, huge ears, a crude dagger — a goblin, not a small orc."""
+    cx, cy, r, sc = m["cx"], m["head_cy"], m["r"], m["size"]
+    skin = m["skin"]
+    # big swept ears
+    for sx in (-1, 1):
+        pygame.draw.polygon(s, skin, [
+            (cx + sx * r * 0.75, cy - r * 0.2),
+            (cx + sx * r * 2.5, cy - r * 1.15),
+            (cx + sx * r * 1.5, cy + r * 0.05),
+            (cx + sx * r * 0.8, cy + r * 0.5)])
+        pygame.draw.polygon(s, shade(skin, 0.72), [
+            (cx + sx * r * 0.95, cy - r * 0.1),
+            (cx + sx * r * 2.05, cy - r * 0.85),
+            (cx + sx * r * 1.3, cy + r * 0.0)])
+    # long hooked nose
+    pygame.draw.polygon(s, shade(skin, 0.86),
+                        [(cx + r * 0.06, cy + r * 0.02), (cx + r * 0.7, cy + r * 0.55),
+                         (cx + r * 0.1, cy + r * 0.6)])
+    pygame.draw.polygon(s, mix(skin, (255, 255, 255), 0.3),
+                        [(cx + r * 0.12, cy + r * 0.06), (cx + r * 0.5, cy + r * 0.42),
+                         (cx + r * 0.16, cy + r * 0.5)])
+    # a jagged grin with two fangs
+    pygame.draw.line(s, (58, 34, 30), (cx - r * 0.5, cy + r * 0.72),
+                     (cx + r * 0.45, cy + r * 0.78), max(1, int(r * 0.14)))
+    for sx in (-1, 1):
+        pygame.draw.polygon(s, (246, 242, 224),
+                            [(cx + sx * r * 0.36, cy + r * 0.72),
+                             (cx + sx * r * 0.2, cy + r * 1.18),
+                             (cx + sx * r * 0.05, cy + r * 0.74)])
+    # ragged hem and a crude dagger
+    pygame.draw.polygon(s, shade(m["shirt"], 0.72),
+                        [(cx - m["tw"], m["hip_y"] - r * 0.2), (cx + m["tw"], m["hip_y"] - r * 0.2),
+                         (cx + m["tw"] * 0.8, m["hip_y"] + r * 0.7),
+                         (cx - m["tw"] * 0.9, m["hip_y"] + r * 0.5)])
+    hx = cx + m["tw"] + 3.4 * sc
+    hy = m["hip_y"] + 2.6 * sc
+    pygame.draw.line(s, (92, 74, 58), (hx, hy), (hx + 1.5 * sc, hy - 8 * sc), max(2, int(2 * sc)))
+    pygame.draw.polygon(s, (196, 198, 206), [(hx + 1.5 * sc, hy - 8 * sc),
+                                             (hx + 1.0 * sc, hy - 15 * sc),
+                                             (hx + 3.4 * sc, hy - 9 * sc)])
     if big:
-        pygame.draw.polygon(d, (236, 232, 214), [(24, 24), (21, 20), (27, 21)])
-        pygame.draw.polygon(d, (236, 232, 214), [(40, 24), (43, 20), (37, 21)])
-        pygame.draw.polygon(d, IRON_D, [(14, 30), (6, 20), (17, 26)])
-    return d
+        pygame.draw.polygon(s, IRON_D, [(cx - m["tw"] * 1.5, m["shoulder_y"] + 3 * sc),
+                                        (cx - m["tw"] * 2.6, m["shoulder_y"] - 6 * sc),
+                                        (cx - m["tw"] * 0.8, m["shoulder_y"] - 1 * sc)])
+        pygame.draw.polygon(s, IRON_D, [(cx + m["tw"] * 1.5, m["shoulder_y"] + 3 * sc),
+                                        (cx + m["tw"] * 2.6, m["shoulder_y"] - 6 * sc),
+                                        (cx + m["tw"] * 0.8, m["shoulder_y"] - 1 * sc)])
+        pygame.draw.rect(s, shade(IRON, 0.85),
+                         (int(cx - m["tw"] * 0.75), int(m["shoulder_y"] + 2 * sc),
+                          int(m["tw"] * 1.5), int(r * 1.5)), border_radius=int(r * 0.4))
+
+
+def _goblin(frame=0, big=False, view="down") -> pygame.Surface:
+    return _humanoid(skin="green", hair="black", shirt="rust" if not big else "brown",
+                     pants="leather", boots="brown", view=view, frame=frame,
+                     ears=None, eyes="glow" if big else "normal",
+                     build=1.3 if big else 1.0, size=1.22 if big else 0.94,
+                     belt=big, shoulder=big,
+                     decorate=lambda s, m: _goblin_face(s, m, big=big))
+
+
+def _orc_face(s, m) -> None:
+    """War paint, a broad jaw with two big tusks, an iron chest plate and an axe."""
+    cx, cy, r, sc = m["cx"], m["head_cy"], m["r"], m["size"]
+    skin = m["skin"]
+    # heavy jaw
+    _ell(s, shade(skin, 0.9), cx, cy + r * 0.5, r * 0.85, r * 0.55)
+    for sx in (-1, 1):                       # tusks that read from the front
+        pygame.draw.polygon(s, (242, 238, 220),
+                            [(cx + sx * r * 0.52, cy + r * 0.66),
+                             (cx + sx * r * 0.34, cy + r * 0.02),
+                             (cx + sx * r * 0.16, cy + r * 0.7)])
+        pygame.draw.polygon(s, (206, 200, 180),
+                            [(cx + sx * r * 0.46, cy + r * 0.62),
+                             (cx + sx * r * 0.36, cy + r * 0.2),
+                             (cx + sx * r * 0.26, cy + r * 0.64)])
+    pygame.draw.line(s, (66, 34, 34), (cx - r * 0.6, cy + r * 0.78),
+                     (cx + r * 0.6, cy + r * 0.78), max(1, int(r * 0.16)))
+    # red war paint across the eyes
+    pygame.draw.rect(s, (168, 54, 46), (int(cx - r * 0.95), int(cy - r * 0.32),
+                                        int(r * 1.9), max(2, int(r * 0.3))))
+    _ell(s, (250, 250, 252), cx - r * 0.42, cy + r * 0.12, r * 0.24, r * 0.22)
+    _ell(s, (250, 250, 252), cx + r * 0.42, cy + r * 0.12, r * 0.24, r * 0.22)
+    _ell(s, (188, 62, 52), cx - r * 0.38, cy + r * 0.12, r * 0.13, r * 0.14)
+    _ell(s, (188, 62, 52), cx + r * 0.46, cy + r * 0.12, r * 0.13, r * 0.14)
+    # iron chest plate and a big axe
+    pygame.draw.polygon(s, IRON, [(cx - m["tw"] * 0.9, m["shoulder_y"] + 2 * sc),
+                                  (cx + m["tw"] * 0.9, m["shoulder_y"] + 2 * sc),
+                                  (cx + m["tw"] * 0.75, m["hip_y"] - 2 * sc),
+                                  (cx - m["tw"] * 0.75, m["hip_y"] - 2 * sc)])
+    pygame.draw.line(s, IRON_L, (cx - m["tw"] * 0.5, m["shoulder_y"] + 4 * sc),
+                     (cx - m["tw"] * 0.4, m["hip_y"] - 3 * sc), max(1, int(1.4 * sc)))
+    ax = cx - m["tw"] - 4.2 * sc
+    ay = m["hip_y"] + 1.6 * sc
+    pygame.draw.line(s, (98, 74, 52), (ax, ay + 2 * sc), (ax + 1.6 * sc, ay - 12 * sc),
+                     max(2, int(2.2 * sc)))
+    pygame.draw.polygon(s, (176, 180, 190), [(ax + 0.4 * sc, ay - 11 * sc),
+                                             (ax - 5.4 * sc, ay - 13 * sc),
+                                             (ax - 5.0 * sc, ay - 6.4 * sc),
+                                             (ax + 2.0 * sc, ay - 7.4 * sc)])
+    pygame.draw.polygon(s, (206, 210, 220), [(ax - 4.4 * sc, ay - 12.2 * sc),
+                                             (ax - 1.2 * sc, ay - 10.6 * sc),
+                                             (ax - 3.0 * sc, ay - 8.0 * sc)])
 
 
 def _orc(frame=0, view="down") -> pygame.Surface:
-    s = _humanoid(skin="darkgreen", hair="black", shirt="grey", pants="black",
-                  boots="black", view=view, frame=frame, ears="pointed",
-                  build=1.35, size=1.2, shoulder=True, belt=True)
-    d = pygame.Surface(s.get_size(), pygame.SRCALPHA)
-    d.blit(s, (0, 0))
-    pygame.draw.polygon(d, (238, 234, 216), [(25, 27), (22, 21), (28, 24)])
-    pygame.draw.polygon(d, (238, 234, 216), [(39, 27), (42, 21), (36, 24)])
-    _ell(d, (188, 84, 60), 20, 18, 3.2, 2.4)
-    return d
+    return _humanoid(skin="darkgreen", hair="black", shirt="grey", pants="black",
+                     boots="black", view=view, frame=frame, ears="pointed",
+                     build=1.35, size=1.18, shoulder=True, belt=True,
+                     decorate=_orc_face)
 
 
 def _skeleton(frame=0, view="down") -> pygame.Surface:
@@ -287,30 +417,76 @@ def _wraith(frame=0, view="down") -> pygame.Surface:
         pygame.draw.polygon(ghost, (168, 176, 214), [(x, 54), (x + 4, 60), (x + 7, 54)])
     ghost.set_alpha(215)
     s.blit(ghost, (0, 0))
-    _outline(s)
+    _finish(s)
     return s
 
 
 def _troll(frame=0, view="down") -> pygame.Surface:
+    """A hunched giant: mossy back, huge jaw with tusks, long arms, a club."""
+    def face(s, m):
+        cx, cy, r, sc = m["cx"], m["head_cy"], m["r"], m["size"]
+        _ell(s, shade(m["skin"], 0.88), cx, cy + r * 0.55, r * 0.95, r * 0.6)
+        for sx in (-1, 1):
+            pygame.draw.polygon(s, (238, 234, 214),
+                                [(cx + sx * r * 0.6, cy + r * 0.7),
+                                 (cx + sx * r * 0.5, cy - r * 0.05),
+                                 (cx + sx * r * 0.22, cy + r * 0.72)])
+        pygame.draw.line(s, (52, 44, 40), (cx - r * 0.62, cy + r * 0.8),
+                         (cx + r * 0.62, cy + r * 0.8), max(1, int(r * 0.18)))
+        _ell(s, (250, 244, 150), cx - r * 0.42, cy + r * 0.14, r * 0.2, r * 0.2)
+        _ell(s, (250, 244, 150), cx + r * 0.42, cy + r * 0.14, r * 0.2, r * 0.2)
+        # a club resting on the shoulder
+        hx = cx + m["tw"] + 3.0 * sc
+        hy = m["hip_y"] - 2 * sc
+        pygame.draw.line(s, (104, 78, 52), (hx, hy + 10 * sc), (hx + 3 * sc, hy - 12 * sc),
+                         max(3, int(3.2 * sc)))
+        _ell(s, (128, 100, 68), hx + 3 * sc, hy - 14 * sc, 4.6 * sc, 4.4 * sc)
+        _ell(s, (152, 122, 86), hx + 2 * sc, hy - 15.5 * sc, 2.6 * sc, 2.2 * sc)
+
     s = _humanoid(skin="moss", hair="brown", shirt="moss", pants="moss",
                   boots="brown", view=view, frame=frame, eyes="glow",
-                  build=1.5, size=1.42, horns=True, belt=False)
+                  build=1.5, size=1.42, horns=True, belt=False, decorate=face)
     d = pygame.Surface(s.get_size(), pygame.SRCALPHA)
     d.blit(s, (0, 0))
-    for _ in range(14):
-        _ell(d, (86, 148, 72), random.randrange(18, 46), random.randrange(24, 50), 2.2, 1.6)
+    for _ in range(16):                      # moss on the back and arms only
+        x = random.choice([random.randrange(16, 26), random.randrange(38, 48)])
+        _ell(d, (86, 148, 72), x, random.randrange(30, 56), 2.2, 1.6)
     return d
 
 
 def _bandit(frame=0, view="down") -> pygame.Surface:
-    s = _humanoid(skin="tan", hair="black", shirt="black", pants="leather",
-                  boots="black", view=view, frame=frame, hat="hood", belt=True)
-    d = pygame.Surface(s.get_size(), pygame.SRCALPHA)
-    d.blit(s, (0, 0))
-    pygame.draw.rect(d, (40, 36, 42), (24, 21, 16, 5))
-    _ell(d, (232, 200, 190), 27, 19, 1.6, 1.4)
-    _ell(d, (232, 200, 190), 37, 19, 1.6, 1.4)
-    return d
+    """Brown leather, a red bandana over the face, a knife: never a second hero."""
+    def gear(s, m):
+        cx, cy, r, sc = m["cx"], m["head_cy"], m["r"], m["size"]
+        # a red bandana across the lower face, tied at the back
+        pygame.draw.polygon(s, (168, 52, 46),
+                            [(cx - r * 1.0, cy + r * 0.24), (cx + r * 1.0, cy + r * 0.24),
+                             (cx + r * 0.9, cy + r * 0.9), (cx - r * 0.9, cy + r * 0.9)])
+        pygame.draw.polygon(s, (198, 70, 62), [(cx - r * 0.9, cy + r * 0.3),
+                                               (cx + r * 0.1, cy + r * 0.34),
+                                               (cx - r * 0.2, cy + r * 0.86)])
+        _ell(s, (250, 250, 252), cx - r * 0.42, cy + r * 0.02, r * 0.24, r * 0.22)
+        _ell(s, (250, 250, 252), cx + r * 0.42, cy + r * 0.02, r * 0.24, r * 0.22)
+        _ell(s, (46, 38, 44), cx - r * 0.38, cy + r * 0.02, r * 0.13, r * 0.14)
+        _ell(s, (46, 38, 44), cx + r * 0.46, cy + r * 0.02, r * 0.13, r * 0.14)
+        # a leather jerkin over the shirt and a knife in the right hand
+        pygame.draw.polygon(s, (122, 82, 48), [(cx - m["tw"] * 0.9, m["shoulder_y"] + 2 * sc),
+                                               (cx + m["tw"] * 0.9, m["shoulder_y"] + 2 * sc),
+                                               (cx + m["tw"] * 0.8, m["hip_y"] + 1 * sc),
+                                               (cx - m["tw"] * 0.8, m["hip_y"] + 1 * sc)])
+        pygame.draw.line(s, (86, 58, 36), (cx, m["shoulder_y"] + 3 * sc),
+                         (cx, m["hip_y"]), max(1, int(1.6 * sc)))
+        hx = cx + m["tw"] + 3.6 * sc
+        hy = m["hip_y"] + 2.4 * sc
+        pygame.draw.line(s, (74, 56, 40), (hx, hy), (hx + 1.2 * sc, hy - 7 * sc),
+                         max(2, int(2 * sc)))
+        pygame.draw.polygon(s, (204, 208, 216), [(hx + 1.2 * sc, hy - 7 * sc),
+                                                 (hx + 0.8 * sc, hy - 14 * sc),
+                                                 (hx + 3.0 * sc, hy - 8 * sc)])
+
+    return _humanoid(skin="tan", hair="black", shirt="brown", pants="leather",
+                     boots="black", view=view, frame=frame, hat="hood", belt=True,
+                     decorate=gear)
 
 
 def _imp(frame=0, view="down") -> pygame.Surface:
@@ -329,83 +505,204 @@ def _imp(frame=0, view="down") -> pygame.Surface:
 
 
 def _golem(frame=0, view="down") -> pygame.Surface:
+    """Stone slabs with bevels, a chiselled face, cracks and a molten core."""
     s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
     _shadow(s, 32, 62, 30, 10)
     step = 1 if frame else 0
-    pygame.draw.rect(s, (96, 96, 104), (16, 50 - step, 13, 12))
-    pygame.draw.rect(s, (96, 96, 104), (35, 50 + step, 13, 12))
-    pygame.draw.rect(s, (128, 128, 136), (16, 14, 32, 38))
-    pygame.draw.rect(s, (166, 166, 172), (18, 16, 12, 34))
-    pygame.draw.rect(s, (84, 84, 92), (34, 16, 14, 34))
-    for y in (22, 32, 42):
-        pygame.draw.line(s, (84, 84, 92), (16, y), (48, y), 1)
-    pygame.draw.rect(s, (128, 128, 136), (6, 20, 10, 26))
-    pygame.draw.rect(s, (128, 128, 136), (48, 20, 10, 26))
-    pygame.draw.rect(s, (150, 150, 158), (7, 21, 4, 24))
-    pygame.draw.rect(s, (104, 104, 112), (50, 21, 5, 24))
-    pygame.draw.rect(s, (140, 138, 136), (22, 4, 20, 14))
-    pygame.draw.rect(s, (172, 170, 168), (23, 5, 8, 12))
-    _ell(s, (150, 230, 200), 28, 11, 2.2, 2.2)
-    _ell(s, (150, 230, 200), 36, 11, 2.2, 2.2)
-    _ell(s, (110, 200, 170), 32, 30, 5, 5)
-    _outline(s)
+    stone, stone_d, stone_l = (128, 128, 136), (88, 88, 96), (176, 176, 184)
+    # legs: tapered slabs with a bevelled foot
+    for x, off in ((17, -step), (35, step)):
+        pygame.draw.polygon(s, stone_d, [(x, 34), (x + 13, 34), (x + 11, 60), (x + 2, 60)])
+        pygame.draw.polygon(s, stone, [(x + 2, 35), (x + 8, 35), (x + 7, 59), (x + 3, 59)])
+        pygame.draw.rect(s, stone_l, (x + 1, 57, 11, 4))
+    # torso: a trapezoid, narrower at the waist, with a bright left face
+    pygame.draw.polygon(s, stone_d, [(14, 14), (50, 14), (46, 52), (18, 52)])
+    pygame.draw.polygon(s, stone, [(16, 15), (34, 15), (32, 51), (19, 51)])
+    pygame.draw.polygon(s, stone_l, [(18, 16), (24, 16), (23, 50), (19, 50)])
+    for y in (22, 31, 40):                    # seams between slabs
+        pygame.draw.line(s, stone_d, (17, y), (47, y), 1)
+        pygame.draw.line(s, (150, 150, 158), (17, y + 1), (47, y + 1), 1)
+    pygame.draw.line(s, (70, 70, 78), (34, 26), (28, 38), 1)
+    pygame.draw.line(s, (70, 70, 78), (28, 38), (36, 44), 1)
+    # arms: heavy blocks that hang past the hips
+    for x, sgn in ((4, -1), (48, 1)):
+        pygame.draw.rect(s, stone_d, (x, 18, 12, 30))
+        pygame.draw.rect(s, stone, (x + sgn * 1 + 1, 19, 7, 28))
+        pygame.draw.rect(s, stone_l, (x + 2, 19, 3, 26))
+        pygame.draw.rect(s, (104, 104, 112), (x, 44, 12, 7))
+    # head: a block with a heavy brow, a jaw slot and glowing eyes
+    pygame.draw.rect(s, stone_d, (21, 3, 22, 16))
+    pygame.draw.rect(s, stone, (22, 4, 18, 14))
+    pygame.draw.rect(s, stone_l, (23, 5, 7, 12))
+    pygame.draw.rect(s, stone_d, (20, 3, 24, 3))            # brow ridge
+    _ell(s, (120, 240, 200), 28, 11, 2.4, 2.2)
+    _ell(s, (120, 240, 200), 36, 11, 2.4, 2.2)
+    _ell(s, (196, 255, 236), 27, 10, 0.8, 0.8)
+    _ell(s, (196, 255, 236), 35, 10, 0.8, 0.8)
+    pygame.draw.rect(s, (58, 58, 66), (26, 15, 12, 2))      # jaw slot
+    for x in range(27, 38, 3):
+        pygame.draw.line(s, (104, 104, 112), (x, 15), (x, 17), 1)
+    _ell(s, (110, 210, 180), 32, 32, 5.4, 5.4)
+    _ell(s, (170, 245, 220), 32, 31, 2.6, 2.6)
+    _finish(s)
     return s
 
 
 # ------------------------------------------------------------------- animals
-def _quadruped(*, body, belly, head_c, frame=0, size=1.0, ears="up",
-               tail="bushy", tusks=False, mane=None, snout=None, legs=4,
-               eye=(30, 26, 32), hump=False) -> pygame.Surface:
+def _quadruped(*, body, belly, head_c, frame=0, size=1.0, ears="up", tail="bushy",
+               tusks=False, mane=None, snout=None, eye=(30, 26, 32), hump=False,
+               body_len=17.0, body_h=10.5, head_r=9.0, head_dx=16.0, head_dy=-8.0,
+               leg_x=(20, 30, 40, 46), leg_w=4.6, leg_len=1.0, claws=False,
+               hooves=False, udder=False, horns=False, snout_len=6.0, snout_ry=4.0,
+               bristles=False, patches=False, fleece=False, neck=0.0,
+               snout_disc=False, base_y=60) -> pygame.Surface:
+    """A four-legged creature. The parameters are what make a wolf, a bear, a boar and a
+    cow read as four different animals instead of one recoloured box."""
     s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
     sc = size
     step = 1 if frame else 0
-    base_y = 60
     body_cy = base_y - 14 * sc
-    _shadow(s, 32, base_y + 1, int(34 * sc), int(9 * sc))
-    for i, lx in enumerate((20, 30, 40, 46)):
+    _shadow(s, 32, base_y + 1, int((body_len + 14) * sc), int(9 * sc))
+    dark = shade(body, 0.62)
+    # legs (back pair darker, so the body has depth)
+    for i, lx in enumerate(leg_x):
         off = (2 if (i + step) % 2 else -2) * sc
-        col = shade(body, 0.72) if i in (0, 3) else body
+        col = shade(body, 0.74) if i in (0, 3) else body
         x0 = lx * sc + (32 - 32 * sc)
-        pygame.draw.line(s, col, (x0, body_cy + 6 * sc), (x0 + off, base_y - 2 * sc),
-                         int(4.6 * sc))
-        _ell(s, shade(body, 0.6), x0 + off, base_y - 1.6 * sc, 2.6 * sc, 1.8 * sc)
+        y_end = base_y - 2 * sc - (leg_len - 1.0) * 12 * sc
+        _limb(s, col, x0, body_cy + 5 * sc, x0 + off, y_end, int(leg_w * sc))
+        if hooves:
+            _ell(s, (44, 40, 46), x0 + off, y_end + 0.6 * sc, leg_w * 0.62 * sc, 2.2 * sc)
+        else:
+            _ell(s, shade(body, 0.58), x0 + off, y_end, 2.6 * sc, 1.8 * sc)
+            if claws:
+                for k in (-1, 0, 1):
+                    pygame.draw.line(s, (236, 232, 216),
+                                     (x0 + off + k * 1.6 * sc, y_end + 1.4 * sc),
+                                     (x0 + off + k * 1.9 * sc, y_end + 2.6 * sc), 1)
+    # tail
+    tx = 14 * sc + (32 - 32 * sc)
     if tail == "bushy":
-        _ell(s, shade(body, 0.86), 14 * sc + (32 - 32 * sc), body_cy - 4 * sc, 5 * sc, 4 * sc)
-        _ell(s, body, 11 * sc + (32 - 32 * sc), body_cy - 7 * sc, 4 * sc, 3.4 * sc)
+        _ell(s, shade(body, 0.82), tx, body_cy - 4 * sc, 5.2 * sc, 4.2 * sc)
+        _ell(s, body, tx - 3 * sc, body_cy - 8 * sc, 4.2 * sc, 3.6 * sc)
+        _ell(s, mix(body, (255, 255, 255), 0.2), tx - 4 * sc, body_cy - 9.6 * sc,
+             2.4 * sc, 1.8 * sc)
     elif tail == "thin":
-        pygame.draw.line(s, body, (14 * sc + (32 - 32 * sc), body_cy),
-                         (6 * sc + (32 - 32 * sc), body_cy - 10 * sc), int(2.4 * sc))
-    _ell(s, body, 32, body_cy, 17 * sc, 10.5 * sc)
-    _ell(s, belly, 32, body_cy + 4 * sc, 13 * sc, 5.4 * sc)
-    _ell(s, mix(body, (255, 255, 255), 0.22), 30, body_cy - 5 * sc, 11 * sc, 3.6 * sc)
+        pygame.draw.line(s, body, (tx, body_cy), (6 * sc + (32 - 32 * sc), body_cy - 10 * sc),
+                         int(2.4 * sc))
+        _ell(s, shade(body, 0.8), 6 * sc + (32 - 32 * sc), body_cy - 10 * sc, 2.4 * sc, 2.0 * sc)
+    elif tail == "tuft":
+        pygame.draw.line(s, shade(body, 0.86), (tx, body_cy - 2 * sc),
+                         (8 * sc + (32 - 32 * sc), body_cy - 9 * sc), int(2.2 * sc))
+        _ell(s, (52, 46, 50), 8 * sc + (32 - 32 * sc), body_cy - 10 * sc, 2.6 * sc, 2.2 * sc)
+    elif tail == "curl":
+        pygame.draw.line(s, shade(body, 0.86), (tx, body_cy - 2 * sc),
+                         (10 * sc + (32 - 32 * sc), body_cy - 9 * sc), int(2.0 * sc))
+        pygame.draw.circle(s, mix(body, (255, 255, 255), 0.25),
+                           (int(11 * sc + (32 - 32 * sc)), int(body_cy - 11 * sc)),
+                           int(2.4 * sc), int(1.4 * sc))
+    # body: three tones from the top light down to the belly
+    _ell(s, body, 32, body_cy, body_len * sc, body_h * sc)
+    _ell(s, mix(body, (255, 255, 255), 0.22), 32 - body_len * 0.12 * sc,
+         body_cy - body_h * 0.42 * sc, body_len * 0.66 * sc, body_h * 0.36 * sc)
+    _ell(s, shade(body, 0.82), 32 + body_len * 0.3 * sc, body_cy + body_h * 0.2 * sc,
+         body_len * 0.62 * sc, body_h * 0.66 * sc)
+    _ell(s, belly, 32, body_cy + body_h * 0.62 * sc, body_len * 0.78 * sc, body_h * 0.42 * sc)
     if hump:
-        _ell(s, shade(body, 0.9), 30, body_cy - 9 * sc, 9 * sc, 5 * sc)
+        _ell(s, shade(body, 0.92), 30, body_cy - body_h * 0.82 * sc,
+             body_len * 0.5 * sc, body_h * 0.42 * sc)
+        _ell(s, mix(body, (255, 255, 255), 0.18), 29, body_cy - body_h * 0.95 * sc,
+             body_len * 0.34 * sc, body_h * 0.2 * sc)
+    if fleece:
+        for i in range(9):
+            fx = 32 + (i - 4) * body_len * 0.22 * sc
+            _ell(s, mix(body, (255, 255, 255), 0.16), fx, body_cy - body_h * 0.8 * sc,
+                 body_len * 0.14 * sc, body_h * 0.3 * sc)
+    if bristles:
+        for i in range(7):
+            bx = 32 + (i - 3) * body_len * 0.2 * sc
+            pygame.draw.line(s, shade(body, 0.5), (bx, body_cy - body_h * 0.9 * sc),
+                             (bx + 1.5 * sc, body_cy - body_h * 1.5 * sc), 1)
+    if patches:
+        _ell(s, (48, 44, 48), 32 - body_len * 0.4 * sc, body_cy - body_h * 0.2 * sc,
+             body_len * 0.24 * sc, body_h * 0.44 * sc)
+        _ell(s, (48, 44, 48), 32 + body_len * 0.34 * sc, body_cy + body_h * 0.1 * sc,
+             body_len * 0.2 * sc, body_h * 0.36 * sc)
+    if udder:
+        _ell(s, (226, 186, 178), 30, body_cy + body_h * 0.92 * sc, 4.4 * sc, 3.0 * sc)
     if mane:
-        for i in range(5):
-            _ell(s, _color(mane), 22 + i * 2.4, body_cy - 6 * sc - i, 3.4 * sc, 3.6 * sc)
-    hx = 48 * sc + (32 - 32 * sc)
-    hy = body_cy - 8 * sc
-    _ell(s, head_c, hx, hy, 9 * sc, 8 * sc)
+        mane_c = _color(mane)
+        for i in range(6):
+            _ell(s, mane_c, 24 + i * 2.2, body_cy - body_h * 0.75 * sc - i * 0.6 * sc,
+                 3.6 * sc, 4.0 * sc)
+            _ell(s, shade(mane_c, 0.78), 24 + i * 2.2, body_cy - body_h * 0.45 * sc - i * 0.6 * sc,
+                 3.0 * sc, 2.6 * sc)
+    # neck and head
+    hx = head_dx * sc + (32 - 32 * sc)
+    hy = body_cy + head_dy * sc
+    if neck:
+        _limb(s, shade(body, 0.94), 32 + (body_len - 3) * sc, body_cy - 2 * sc,
+              hx - 3 * sc, hy + 2 * sc, int(body_h * 0.85 * sc))
+    _ell(s, head_c, hx, hy, head_r * sc, head_r * 0.92 * sc)
+    _ell(s, mix(head_c, (255, 255, 255), 0.2), hx - head_r * 0.3 * sc, hy - head_r * 0.36 * sc,
+         head_r * 0.5 * sc, head_r * 0.36 * sc)
+    _ell(s, shade(head_c, 0.84), hx + head_r * 0.4 * sc, hy + head_r * 0.3 * sc,
+         head_r * 0.5 * sc, head_r * 0.55 * sc)
     if snout:
-        _ell(s, snout, hx + 6 * sc, hy + 2.6 * sc, 5.4 * sc, 4 * sc)
-        _ell(s, (32, 28, 34), hx + 10 * sc, hy + 2.4 * sc, 1.8 * sc, 1.6 * sc)
+        if snout_disc:
+            _ell(s, snout, hx + head_r * 0.66 * sc, hy + head_r * 0.24 * sc,
+                 snout_len * 0.62 * sc, snout_ry * 1.15 * sc)
+            _ell(s, shade(snout, 0.6), hx + head_r * 0.66 * sc, hy + head_r * 0.24 * sc,
+                 1.6 * sc, 1.6 * sc)
+            _ell(s, (26, 22, 26), hx + head_r * 0.5 * sc, hy + head_r * 0.02 * sc,
+                 1.2 * sc, 1.2 * sc)
+            _ell(s, (26, 22, 26), hx + head_r * 0.86 * sc, hy + head_r * 0.02 * sc,
+                 1.2 * sc, 1.2 * sc)
+        else:
+            _ell(s, snout, hx + head_r * 0.6 * sc, hy + head_r * 0.28 * sc,
+                 snout_len * 0.72 * sc, snout_ry * sc)
+            _ell(s, (32, 28, 34), hx + head_r * 0.6 * sc + snout_len * 0.55 * sc,
+                 hy + head_r * 0.22 * sc, 1.9 * sc, 1.7 * sc)
+            pygame.draw.line(s, shade(snout, 0.6), (hx + head_r * 0.5 * sc, hy + head_r * 0.62 * sc),
+                             (hx + head_r * 0.95 * sc, hy + head_r * 0.62 * sc), 1)
     if ears == "up":
         pygame.draw.polygon(s, shade(head_c, 0.85), [(hx - 4 * sc, hy - 6 * sc),
-                                                     (hx - 6 * sc, hy - 13 * sc),
-                                                     (hx + 1 * sc, hy - 7 * sc)])
+                                                     (hx - 6.5 * sc, hy - 14 * sc),
+                                                     (hx + 0.5 * sc, hy - 7 * sc)])
         pygame.draw.polygon(s, shade(head_c, 0.85), [(hx + 3 * sc, hy - 6 * sc),
-                                                     (hx + 5 * sc, hy - 13 * sc),
-                                                     (hx + 8 * sc, hy - 6 * sc)])
+                                                     (hx + 5.5 * sc, hy - 14 * sc),
+                                                     (hx + 8.5 * sc, hy - 6 * sc)])
+        pygame.draw.polygon(s, (74, 54, 58), [(hx - 4 * sc, hy - 7 * sc),
+                                              (hx - 5.5 * sc, hy - 11.5 * sc),
+                                              (hx - 0.5 * sc, hy - 7 * sc)])
     elif ears == "round":
-        _ell(s, shade(head_c, 0.9), hx - 5 * sc, hy - 7 * sc, 3 * sc, 3 * sc)
-        _ell(s, shade(head_c, 0.9), hx + 5 * sc, hy - 7 * sc, 3 * sc, 3 * sc)
+        _ell(s, shade(head_c, 0.9), hx - 5 * sc, hy - 7 * sc, 3.2 * sc, 3.2 * sc)
+        _ell(s, shade(head_c, 0.9), hx + 5 * sc, hy - 7 * sc, 3.2 * sc, 3.2 * sc)
+        _ell(s, shade(head_c, 0.7), hx - 5 * sc, hy - 7 * sc, 1.4 * sc, 1.4 * sc)
+        _ell(s, shade(head_c, 0.7), hx + 5 * sc, hy - 7 * sc, 1.4 * sc, 1.4 * sc)
+    elif ears == "droop":
+        _ell(s, shade(head_c, 0.88), hx - 6 * sc, hy + 2 * sc, 2.8 * sc, 4.4 * sc)
+        _ell(s, shade(head_c, 0.88), hx + 6 * sc, hy + 2 * sc, 2.8 * sc, 4.4 * sc)
+    if horns:
+        pygame.draw.polygon(s, (232, 226, 206), [(hx - 4 * sc, hy - 5 * sc),
+                                                 (hx - 9 * sc, hy - 11 * sc),
+                                                 (hx - 2 * sc, hy - 8 * sc)])
+        pygame.draw.polygon(s, (232, 226, 206), [(hx + 4 * sc, hy - 5 * sc),
+                                                 (hx + 9 * sc, hy - 11 * sc),
+                                                 (hx + 2 * sc, hy - 8 * sc)])
     if tusks:
-        pygame.draw.polygon(s, (238, 234, 214), [(hx + 6 * sc, hy + 4 * sc),
-                                                 (hx + 11 * sc, hy - 1 * sc),
-                                                 (hx + 7 * sc, hy + 5 * sc)])
-    _ell(s, (250, 250, 252), hx + 2 * sc, hy - 1.4 * sc, 1.8 * sc, 1.6 * sc)
-    _ell(s, eye, hx + 2.4 * sc, hy - 1.2 * sc, 0.9 * sc, 1.0 * sc)
-    _outline(s)
+        pygame.draw.polygon(s, (240, 236, 218), [(hx + head_r * 0.5 * sc, hy + head_r * 0.62 * sc),
+                                                 (hx + head_r * 0.95 * sc, hy - head_r * 0.1 * sc),
+                                                 (hx + head_r * 0.78 * sc, hy + head_r * 0.66 * sc)])
+        pygame.draw.polygon(s, (240, 236, 218), [(hx + head_r * 0.16 * sc, hy + head_r * 0.66 * sc),
+                                                 (hx + head_r * 0.02 * sc, hy - head_r * 0.05 * sc),
+                                                 (hx - head_r * 0.1 * sc, hy + head_r * 0.7 * sc)])
+    ex = hx + head_r * 0.3 * sc
+    ey = hy - head_r * 0.16 * sc
+    _ell(s, (250, 250, 252), ex, ey, 2.2 * sc, 2.0 * sc)
+    _ell(s, eye, ex + 0.4 * sc, ey, 1.1 * sc, 1.2 * sc)
+    _ell(s, (255, 255, 255), ex - 0.4 * sc, ey - 0.7 * sc, 0.6 * sc, 0.6 * sc)
+    _finish(s)
     return s
 
 
@@ -430,22 +727,27 @@ def _spider(frame=0) -> pygame.Surface:
     _ell(s, (86, 60, 50), 32, 27, 6, 5)
     for dx in (-3.4, -1.2, 1.2, 3.4):
         _ell(s, (200, 60, 60), 32 + dx, 27 + (1.6 if dx > 0 else -1.6), 1.5, 1.5)
-    _outline(s)
+    _finish(s)
     return s
 
 
 def _slime(frame=0) -> pygame.Surface:
+    """A glossy blob with a highlight, a mouth and drips."""
     s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
     squash = 2 if frame else 0
     _shadow(s, 32, 60, 30, 9)
-    pygame.draw.ellipse(s, (60, 140, 120), (12, 26 + squash, 40, 34 - squash * 2))
+    pygame.draw.ellipse(s, (46, 122, 104), (12, 26 + squash, 40, 34 - squash * 2))
     pygame.draw.ellipse(s, (92, 186, 152), (14, 28 + squash, 36, 28 - squash * 2))
+    pygame.draw.ellipse(s, (138, 214, 178), (16, 30 + squash, 30, 18 - squash))
     pygame.draw.ellipse(s, (150, 224, 190), (18, 30 + squash, 16, 10))
-    _ell(s, (30, 40, 44), 26, 40, 2.4, 3)
-    _ell(s, (30, 40, 44), 38, 40, 2.4, 3)
-    _ell(s, (250, 250, 252), 26, 39, 1, 1.2)
-    _ell(s, (250, 250, 252), 38, 39, 1, 1.2)
-    _outline(s)
+    pygame.draw.ellipse(s, (222, 250, 236), (20, 31 + squash, 8, 4))     # gloss
+    pygame.draw.ellipse(s, (222, 250, 236), (34, 44 + squash, 4, 2))
+    _ell(s, (26, 36, 40), 26, 40, 2.6, 3.2)                              # eyes
+    _ell(s, (26, 36, 40), 38, 40, 2.6, 3.2)
+    _ell(s, (250, 250, 252), 25.4, 39, 1.1, 1.3)
+    _ell(s, (250, 250, 252), 37.4, 39, 1.1, 1.3)
+    pygame.draw.arc(s, (32, 60, 52), (27, 42, 10, 7), 3.5, 6.0, 2)       # mouth
+    _finish(s)
     return s
 
 
@@ -465,7 +767,7 @@ def _bat(frame=0) -> pygame.Surface:
     pygame.draw.polygon(s, (60, 46, 66), [(37, 27), (39, 18), (33, 26)])
     _ell(s, (250, 200, 120), 29, 31, 1.6, 1.6)
     _ell(s, (250, 200, 120), 35, 31, 1.6, 1.6)
-    _outline(s)
+    _finish(s)
     return s
 
 
@@ -478,14 +780,20 @@ def _snake(frame=0) -> pygame.Surface:
         pygame.draw.line(s, col, pts[i], pts[i + 1], 9)
         pygame.draw.line(s, (118, 178, 96), pts[i], pts[i + 1], 3)
     hx, hy = 28, 26
-    _ell(s, (96, 158, 80), hx, hy, 8, 6.5)
-    _ell(s, (120, 184, 96), hx - 1, hy - 1, 6, 4.6)
-    _ell(s, (250, 230, 120), hx - 3.4, hy - 1.6, 1.8, 1.8)
-    _ell(s, (250, 230, 120), hx + 3.4, hy - 1.6, 1.8, 1.8)
-    _ell(s, (30, 26, 32), hx - 3.4, hy - 1.4, 0.9, 1.1)
-    _ell(s, (30, 26, 32), hx + 3.4, hy - 1.4, 0.9, 1.1)
-    pygame.draw.line(s, (200, 60, 60), (hx + 7, hy + 2), (hx + 12, hy + 3), 2)
-    _outline(s)
+    _ell(s, (86, 146, 72), hx, hy, 9.5, 7.4)
+    _ell(s, (120, 184, 96), hx - 1, hy - 1, 7.2, 5.4)
+    _ell(s, (150, 206, 116), hx - 2, hy - 3, 3.6, 2.2)
+    pygame.draw.line(s, (52, 96, 46), (hx - 7, hy + 3.4), (hx + 8, hy + 3.0), 1)
+    pygame.draw.line(s, (52, 96, 46), (hx - 6, hy - 3.4), (hx + 7, hy - 3.6), 1)
+    _ell(s, (250, 230, 120), hx - 3.6, hy - 1.8, 2.0, 2.0)
+    _ell(s, (250, 230, 120), hx + 3.8, hy - 1.8, 2.0, 2.0)
+    _ell(s, (30, 26, 32), hx - 3.6, hy - 1.6, 0.9, 1.4)
+    _ell(s, (30, 26, 32), hx + 3.8, hy - 1.6, 0.9, 1.4)
+    _ell(s, (36, 30, 36), hx - 6.4, hy + 1.2, 0.8, 0.6)
+    _ell(s, (36, 30, 36), hx + 7.0, hy + 1.2, 0.8, 0.6)
+    pygame.draw.line(s, (200, 60, 60), (hx + 8, hy + 2), (hx + 14, hy + 4), 2)
+    pygame.draw.line(s, (200, 60, 60), (hx + 14, hy + 4), (hx + 12, hy + 7), 2)
+    _finish(s)
     return s
 
 
@@ -502,40 +810,60 @@ def _chicken(frame=0) -> pygame.Surface:
     _ell(s, (30, 26, 32), 40, 28, 1.2, 1.2)
     pygame.draw.line(s, (216, 176, 70), (30, 50), (30, 58), 2)
     pygame.draw.line(s, (216, 176, 70), (36, 50), (36, 58), 2)
-    _outline(s)
+    _finish(s)
     return s
 
 
 def _cow(frame=0) -> pygame.Surface:
-    return _quadruped(body=(238, 236, 230), belly=(252, 250, 246), head_c=(246, 244, 238),
-                      frame=frame, size=1.05, ears="round", tail="thin",
-                      snout=(232, 186, 176), legs=4)
+    """Heavy white body, black patches, horns, udder and hooves."""
+    return _quadruped(body=(238, 236, 230), belly=(250, 248, 244), head_c=(244, 242, 236),
+                      frame=frame, size=1.02, ears="droop", tail="tuft",
+                      snout=(230, 178, 170), snout_len=5.6, snout_ry=4.2,
+                      body_len=18.5, body_h=11.8, head_r=8.4, head_dx=17.0, head_dy=-9.0,
+                      leg_x=(19, 29, 41, 47), leg_w=5.2, leg_len=0.98,
+                      hooves=True, udder=True, horns=True, patches=True, neck=1.0)
 
 
 def _sheep(frame=0) -> pygame.Surface:
-    s = _quadruped(body=(240, 238, 232), belly=(250, 248, 244), head_c=(70, 62, 60),
-                   frame=frame, size=0.92, ears="round", tail="bushy", legs=4)
+    """Bumpy fleece, black face and legs."""
+    s = _quadruped(body=(236, 234, 228), belly=(246, 244, 238), head_c=(64, 58, 56),
+                   frame=frame, size=0.88, ears="droop", tail="bushy",
+                   snout=(52, 48, 46), snout_len=4.0, snout_ry=3.2,
+                   body_len=16.5, body_h=11.0, head_r=7.4, head_dx=15.0, head_dy=-7.0,
+                   leg_x=(21, 30, 39, 45), leg_w=3.8, leg_len=0.94, fleece=True)
     for i in range(9):
-        _ell(s, (252, 250, 246), 20 + (i % 5) * 5, 38 + (i // 5) * 5, 4, 3.4)
+        _ell(s, (250, 248, 244), 20 + (i % 5) * 5, 38 + (i // 5) * 5, 4, 3.4)
     return s
 
 
 def _wolf(frame=0) -> pygame.Surface:
-    return _quadruped(body=(112, 112, 122), belly=(146, 146, 156), head_c=(124, 124, 134),
-                      frame=frame, size=1.0, ears="up", tail="bushy",
-                      snout=(84, 84, 94), eye=(240, 200, 90), legs=4)
+    """Lean and low, long muzzle, tall pointed ears, bushy tail, claws."""
+    return _quadruped(body=(146, 148, 158), belly=(182, 184, 192), head_c=(158, 158, 168),
+                      frame=frame, size=0.94, ears="up", tail="bushy",
+                      snout=(112, 112, 122), snout_len=8.0, snout_ry=3.4,
+                      body_len=17.0, body_h=8.6, head_r=7.8, head_dx=17.5, head_dy=-6.0,
+                      leg_x=(22, 31, 39, 45), leg_w=3.6, leg_len=1.06,
+                      claws=True, eye=(242, 200, 86), neck=0.6)
 
 
 def _boar(frame=0) -> pygame.Surface:
-    return _quadruped(body=(112, 84, 62), belly=(140, 108, 80), head_c=(126, 96, 70),
-                      frame=frame, size=1.02, ears="round", tail="thin",
-                      tusks=True, snout=(150, 112, 96), hump=True, legs=4)
+    """Low and front-heavy: bristly ridge, flat snout disc, tusks, short thick legs."""
+    return _quadruped(body=(104, 78, 58), belly=(138, 106, 78), head_c=(118, 90, 66),
+                      frame=frame, size=1.0, ears="up", tail="thin",
+                      tusks=True, snout=(154, 116, 100), snout_len=6.4, snout_ry=4.4,
+                      snout_disc=True, body_len=17.5, body_h=10.6, head_r=8.6,
+                      head_dx=15.5, head_dy=-5.4, leg_x=(20, 29, 40, 46), leg_w=5.0,
+                      leg_len=0.9, hump=True, bristles=True, neck=0.8)
 
 
 def _bear(frame=0) -> pygame.Surface:
-    return _quadruped(body=(94, 68, 52), belly=(126, 94, 70), head_c=(108, 80, 60),
-                      frame=frame, size=1.22, ears="round", tail="bushy",
-                      snout=(146, 112, 88), legs=4)
+    """Massive: shoulder hump, broad head, small round ears, thick legs, claws."""
+    return _quadruped(body=(96, 70, 52), belly=(128, 96, 72), head_c=(112, 82, 62),
+                      frame=frame, size=1.24, ears="round", tail="bushy",
+                      snout=(148, 114, 90), snout_len=5.0, snout_ry=4.6,
+                      body_len=19.0, body_h=13.0, head_r=9.6, head_dx=15.0, head_dy=-9.5,
+                      leg_x=(19, 29, 41, 47), leg_w=6.0, leg_len=0.96,
+                      hump=True, claws=True, neck=0.9)
 
 
 MONSTER_BUILDERS = {
@@ -674,6 +1002,31 @@ def _i_leaf(s, col) -> None:
     pygame.draw.line(s, shade(col, 0.7), (8, 12), (14, 9), 1)
 
 
+def _i_berry(s) -> None:
+    """A little cluster of red berries with two leaves."""
+    for (cx, cy) in ((8, 13), (16, 13), (12, 18)):
+        pygame.draw.circle(s, (168, 34, 46), (cx, cy), 4)
+        pygame.draw.circle(s, (222, 62, 66), (cx - 1, cy - 1), 3)
+        pygame.draw.circle(s, (250, 176, 168), (cx - 2, cy - 2), 1)
+    pygame.draw.line(s, (96, 150, 74), (12, 9), (12, 5), 2)
+    pygame.draw.polygon(s, (110, 172, 84), [(12, 6), (17, 4), (13, 9)])
+    pygame.draw.polygon(s, (86, 148, 66), [(12, 7), (7, 5), (11, 10)])
+
+
+def _i_flower(s) -> None:
+    """Five petals around a golden heart, with a stem."""
+    pygame.draw.line(s, (96, 150, 74), (12, 12), (12, 21), 2)
+    pygame.draw.polygon(s, (110, 172, 84), [(12, 16), (7, 13), (12, 19)])
+    for a in range(5):
+        ang = -math.pi / 2 + a * math.tau / 5
+        px = 12 + math.cos(ang) * 5.2
+        py = 10 + math.sin(ang) * 5.2
+        pygame.draw.circle(s, (232, 108, 168), (int(px), int(py)), 4)
+        pygame.draw.circle(s, (250, 168, 208), (int(px - 1), int(py - 1)), 2)
+    pygame.draw.circle(s, (240, 200, 78), (12, 10), 3)
+    pygame.draw.circle(s, (255, 238, 150), (11, 9), 1)
+
+
 def _i_mushroom(s, cap, stem) -> None:
     pygame.draw.rect(s, stem, (10, 12, 5, 9))
     pygame.draw.ellipse(s, shade(cap, 0.7), (4, 5, 17, 11))
@@ -775,6 +1128,9 @@ ICON_BUILDERS = {
     "gem_sapphire": lambda s: _i_gem(s, (72, 116, 214)),
     "gold": _i_coin,
     "herb": lambda s: _i_leaf(s, (110, 172, 84)),
+    "leaf": lambda s: _i_leaf(s, (86, 148, 66)),
+    "berry": _i_berry,
+    "flower": _i_flower,
     "mushroom": lambda s: _i_mushroom(s, (204, 74, 70), (238, 232, 214)),
     "ear": lambda s: _i_fang(s, (196, 148, 132)),
     "fang": _i_fang,
