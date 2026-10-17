@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.4.
+"""Rendering, UI screens and the main loop for Pixel patch 2.5.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -1006,7 +1006,7 @@ class Renderer:
         st = g.stats()
         w = S(340)
         self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.text(self.font_big, "Pixel patch 2.4", True,
+        screen.blit(self.text(self.font_big, "Pixel patch 2.5", True,
                                          (250, 246, 226)), (S(20), S(14)))
         screen.blit(self.text(self.font_small, 
             f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
@@ -2032,7 +2032,7 @@ class Renderer:
         if note:
             n = self.text(self.font_small, note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.text(self.font_small, "Pixel patch — версия 2.4", True,
+        ver = self.text(self.font_small, "Pixel patch — версия 2.5", True,
                                      (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
@@ -2160,7 +2160,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.4")
+    pygame.display.set_caption("Pixel patch 2.5")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

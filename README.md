@@ -5,7 +5,7 @@
 
 | Версия | Технологии | Где запускать |
 |---|---|---|
-| **2.4** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
+| **2.5** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
 | **1.0** | HTML + p5.js | `index.html` в браузере |
 
 ## Играть

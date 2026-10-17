@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.4 — Python / pygame-ce.
+"""Pixel patch 2.5 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:

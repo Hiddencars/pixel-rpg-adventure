@@ -3,7 +3,7 @@
 Все заметные изменения проекта. Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии по [Semantic Versioning](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [2.5.0] — 2026-10-17
 
 ### Added
 - **HD-2D освещение и суточный цикл.** Поверх кадра кладётся карта света в
