@@ -474,7 +474,13 @@ class Renderer:
         return self._bush_surfs[idx]
 
     def _build_minimap(self) -> pygame.Surface:
-        """Pre-render the whole island once; the HUD draws a marker on top."""
+        """Pre-render the whole island once; the HUD draws a marker on top.
+
+        Кэш висит на мире: selftest строит рендерер на каждое разрешение, и без
+        этого карта в 320 000 тайлов пеклась бы заново пять раз."""
+        cached = getattr(self.game.world, "_minimap", None)
+        if cached is not None:
+            return cached
         w = W.MAP_W * 2
         h = W.MAP_H * 2
         surf = pygame.Surface((w, h))
@@ -495,6 +501,7 @@ class Renderer:
         for o in self.game.world.objects:
             if o["kind"].startswith("house"):
                 surf.fill((120, 60, 50), (o["x"] * 2, o["y"] * 2, 6, 4))
+        self.game.world._minimap = surf
         return surf
 
     # --------------------------------------------------------------- helpers

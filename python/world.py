@@ -42,6 +42,38 @@ def _sc2(x, y):
     return _sc(x), _sc(y)
 
 
+# Области мира как статические данные: quests.py берёт отсюда id, не строя мир.
+# Прямоугольники заданы в старой системе 250×128 и масштабируются при построении.
+_REGIONS_RAW = (
+    ("village",   "Дубрава",            "village",   (110, 52, 141, 77),   [], 1),
+    ("meadow",    "Луга",               "meadow",    (60, 40, 190, 92),    ["goblin", "slime", "chicken", "sheep", "cow", "boar"], 1),
+    ("forest",    "Тёмный бор",         "forest",    (2, 2, 120, 128),     ["goblin", "brute", "wolf", "spider", "boar", "bear", "snake"], 2),
+    ("swamp",     "Гнилая топь",        "swamp",     (2, 90, 120, 128),    ["slime", "snake", "spider", "troll", "imp"], 3),
+    ("highlands", "Кряж",               "highlands", (120, 2, 250, 46),    ["orc", "golem", "troll", "skeleton", "bat", "imp"], 4),
+    ("ruins",     "Руины Аргоса",       "ruins",     (196, 24, 240, 60),   ["skeleton", "wraith", "bandit", "golem"], 5),
+    ("graveyard", "Погост",             "graveyard", (180, 88, 220, 116),  ["skeleton", "wraith", "imp"], 4),
+    ("camp",      "Логово разбойников", "camp",      (44, 86, 84, 116),    ["bandit", "brute", "wolf"], 3),
+    ("shore",     "Берег",              "shore",     (2, 30, 60, 70),      ["goblin", "slime", "chicken"], 1),
+)
+
+REGION_IDS = frozenset(r[0] for r in _REGIONS_RAW)
+
+
+def _scaled_regions() -> list[dict]:
+    """Собирает список регионов с прямоугольниками, отмасштабированными под MAP."""
+    vx, vy = VILLAGE_CENTER
+    out = []
+    for (rid, name, _key, (rx0, ry0, rx1, ry1), mobs, level) in _REGIONS_RAW:
+        if rid == "village":
+            rect = (vx - 17, vy - 13, vx + 17, vy + 13)
+        else:
+            rect = (_sc(rx0), _sc(ry0), _sc(rx1), _sc(ry1))
+        out.append({"id": rid, "name": name, "rect": rect, "mobs": list(mobs), "level": level})
+    return out
+
+REGIONS_DEF = _scaled_regions()
+
+
 # ------------------------------------------------------------------- noise
 def hash2(x: float, y: float) -> float:
     n = math.sin(x * 127.1 + y * 311.7) * 43758.5453123
@@ -154,6 +186,14 @@ class World:
         return None
 
     def reachable_from(self, start: tuple[int, int]) -> set[tuple[int, int]]:
+        cache = getattr(self, "_reach_cache", None)
+        if cache is not None and cache[0] == start:
+            return cache[1]
+        result = self._reachable_bfs(start)
+        self._reach_cache = (start, result)
+        return result
+
+    def _reachable_bfs(self, start: tuple[int, int]) -> set[tuple[int, int]]:
         if not self.walkable(*start):
             found = self.nearest_walkable(*start)
             if not found:
@@ -568,31 +608,8 @@ class World:
                         self._deco(x, y, "pebble")
 
     def _define_regions(self) -> None:
-        """Области мира. Прямоугольники заданы в старой системе 250×128 и
-        масштабируются; деревня остаётся компактной — это по-прежнему одна
-        площадь с домами, а не треть карты."""
-        vx, vy = VILLAGE_CENTER
-        self.regions = [
-            {"id": "village", "name": "Дубрава", "rect": (vx - 17, vy - 13, vx + 17, vy + 13),
-             "mobs": [], "level": 1},
-            {"id": "meadow", "name": "Луга", "rect": (*_sc2(60, 40), *_sc2(190, 92)),
-             "mobs": ["goblin", "slime", "chicken", "sheep", "cow", "boar"], "level": 1},
-            {"id": "forest", "name": "Тёмный бор", "rect": (*_sc2(2, 2), *_sc2(120, 128)),
-             "mobs": ["goblin", "brute", "wolf", "spider", "boar", "bear", "snake"], "level": 2},
-            {"id": "swamp", "name": "Гнилая топь", "rect": (*_sc2(2, 90), *_sc2(120, 128)),
-             "mobs": ["slime", "snake", "spider", "troll", "imp"], "level": 3},
-            {"id": "highlands", "name": "Кряж", "rect": (*_sc2(120, 2), *_sc2(250, 46)),
-             "mobs": ["orc", "golem", "troll", "skeleton", "bat", "imp"], "level": 4},
-            {"id": "ruins", "name": "Руины Аргоса", "rect": (*_sc2(196, 24), *_sc2(240, 60)),
-             "mobs": ["skeleton", "wraith", "bandit", "golem"], "level": 5},
-            {"id": "graveyard", "name": "Погост", "rect": (*_sc2(180, 88), *_sc2(220, 116)),
-             "mobs": ["skeleton", "wraith", "imp"], "level": 4},
-            {"id": "camp", "name": "Логово разбойников", "rect": (*_sc2(44, 86), *_sc2(84, 116)),
-             "mobs": ["bandit", "brute", "wolf"], "level": 3},
-            {"id": "shore", "name": "Берег", "rect": (*_sc2(2, 30), *_sc2(60, 70)),
-             "mobs": ["goblin", "slime", "chicken"], "level": 1},
-        ]
-
+        """Копия модульной REGIONS_DEF — чтобы экземпляр мог менять rect и т.п."""
+        self.regions = [dict(r) for r in REGIONS_DEF]
 
 def rng_bool(seed_val: int) -> bool:
     return (abs(seed_val) // 3) % 2 == 0
