@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel patch 2.5 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel patch 2.6 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -77,12 +77,15 @@ def _body() -> int:
           f"| water {stats['water_pct']}% | trees {stats['trees']} | houses {stats['houses']} "
           f"| objects {stats['objects']} | decor {stats['decor']}")
     check(stats["land_pct"] >= 55, f"only {stats['land_pct']}% land")
-    check(stats["trees"] >= 700, f"only {stats['trees']} trees")
+    check(stats["trees"] >= 7000, f"only {stats['trees']} trees (мир ×10 ждёт 7k+)")
     check(stats["houses"] >= 8, f"only {stats['houses']} houses")
+    check(stats["decor"] >= 30000, f"only {stats['decor']} decor (плотность мира)")
+    check(len(game.world.decor_buckets) > 1000, "decor spatial index is missing")
+    check(len(game.world.object_buckets) > 1000, "object spatial index is missing")
 
     reach = game.world.reachable_from(W.SPAWN_TILE)
     print("reachable tiles from spawn:", len(reach))
-    check(len(reach) > 5000, f"only {len(reach)} reachable tiles")
+    check(len(reach) > 40000, f"only {len(reach)} reachable tiles (мир ×10)")
 
     game.ensure_reachable()
     for n in game.npcs:
