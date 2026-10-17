@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Procedural background music for Pixel RPG Adventure (stdlib + pygame only).
+"""Procedural background music for Pixel patch (stdlib + pygame only).
 
 Eight looping tracks ("title", "village", "forest", "swamp", "highlands",
 "ruins", "graveyard", "battle") are synthesised at runtime as ``list[float]``
@@ -30,10 +30,13 @@ one Sound per track it has played, so a fully loaded bank is ~28 MB.
 from __future__ import annotations
 
 import array
+import json
 import math
 import os
 import random
 import sys
+import threading
+import time
 import wave
 from typing import Any
 
@@ -775,18 +778,127 @@ def _synthesise(name: str) -> list[float]:
     return _norm_ip(buf, TARGET_PEAK)
 
 
+def _convert_pcm(data: bytes, freq: int, channels: int) -> bytes:
+    """Re-shape 22050 Hz mono PCM for whatever the mixer actually opened.
+
+    SDL usually opens the Windows device at 44100 stereo no matter what we ask for,
+    and the old float-by-float conversion cost about two seconds per track — that was
+    the freeze when the music changed on entering a new region. 44100/2x is handled
+    by array slicing in C, so the whole bank converts in well under a second.
+    """
+    if freq == SAMPLE_RATE and channels == 1:
+        return data
+    src = array.array("h")
+    src.frombytes(data)
+    if freq % SAMPLE_RATE == 0:
+        step = freq // SAMPLE_RATE
+        if step > 1:
+            src = src[::step]
+    elif SAMPLE_RATE % freq == 0:
+        rep = SAMPLE_RATE // freq
+        up = array.array("h", bytes(2 * len(src) * rep))
+        for i, v in enumerate(src):
+            up[i * rep:(i + 1) * rep] = array.array("h", [v]) * rep
+        src = up
+    else:                                   # odd rate: proper resampling
+        floats = _resample(_from_pcm(data), SAMPLE_RATE, freq)
+        src = array.array("h", (int(max(-1.0, min(1.0, f)) * 32767) for f in floats))
+    if channels == 2:
+        out = array.array("h", bytes(4 * len(src)))
+        out[0::2] = src
+        out[1::2] = src
+        src = out
+    return src.tobytes()
+
+
+def _cache_dir() -> str | None:
+    """Where rendered tracks are kept between runs (they cost seconds to synthesise)."""
+    try:
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(
+            os.path.expanduser("~"), ".cache")
+        path = os.path.join(base, "PixelPatch", "music")
+        os.makedirs(path, exist_ok=True)
+        return path
+    except Exception:
+        return None
+
+
+def _read_wav(path: str) -> bytes:
+    try:
+        with wave.open(path, "rb") as f:
+            if (f.getnchannels() != 1 or f.getsampwidth() != 2
+                    or f.getframerate() != SAMPLE_RATE):
+                return b""
+            return f.readframes(f.getnframes())
+    except Exception:
+        return b""
+
+
+def _write_wav(path: str, data: bytes) -> None:
+    try:
+        tmp = path + ".tmp"
+        with wave.open(tmp, "wb") as f:
+            f.setnchannels(1)
+            f.setsampwidth(2)
+            f.setframerate(SAMPLE_RATE)
+            f.writeframes(data)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def _pcm_for(name: str) -> bytes:
-    """16-bit mono PCM of one track, rendered once and cached."""
+    """16-bit mono PCM of one track, rendered once and cached on disk.
+
+    Synthesis is pure Python and takes a few seconds per track, so the rendered
+    WAV is kept in the user's cache directory: the first run pays for it, every
+    later run loads it in milliseconds instead of stuttering the game."""
     data = _CACHE.get(name)
-    if data is None:
-        if name not in _SPECS:
-            return b""
-        buf = _synthesise(name)
-        _STATS[name] = _measure(buf)
-        data = _pcm(buf, 1)
-        del buf
-        _CACHE[name] = data
+    if data is not None:
+        return data
+    if name not in _SPECS:
+        return b""
+    folder = _cache_dir()
+    path = os.path.join(folder, f"{name}.wav") if folder else ""
+    if path:
+        data = _read_wav(path)
+        if data:
+            _CACHE[name] = data
+            if name not in _STATS:
+                _load_stats(folder)
+            return data
+    buf = _synthesise(name)
+    _STATS[name] = _measure(buf)
+    data = _pcm(buf, 1)
+    del buf
+    _CACHE[name] = data
+    if path:
+        _write_wav(path, data)
+        _save_stats(folder)
     return data
+
+
+def _load_stats(folder: str | None) -> None:
+    if not folder:
+        return
+    try:
+        with open(os.path.join(folder, "stats.json"), encoding="utf-8") as f:
+            data = json.load(f)
+        for key, val in data.items():
+            if key not in _STATS and isinstance(val, dict):
+                _STATS[key] = {k: float(v) for k, v in val.items()}
+    except Exception:
+        pass
+
+
+def _save_stats(folder: str | None) -> None:
+    if not folder:
+        return
+    try:
+        with open(os.path.join(folder, "stats.json"), "w", encoding="utf-8") as f:
+            json.dump(_STATS, f, indent=1)
+    except Exception:
+        pass
 
 
 def _stats_for(name: str) -> dict[str, float]:
@@ -864,8 +976,11 @@ def _init_mixer():
 class MusicPlayer:
     """Looping background music; silently inert when audio is unavailable.
 
-    Tracks are synthesised on first use (~1-2 s each) and then cached, so a
-    game start costs nothing and the second ``play`` of a track is instant.
+    All tracks are synthesised once, in a background thread started by ``prewarm()``,
+    because a first-time synthesis takes one to two seconds and used to freeze the
+    game exactly when the player crossed into a new region.  Playback always goes
+    through ONE reserved mixer channel, so a new track can never stack on the old
+    one — that was the "music layered on itself" bug when pressing N.
     """
 
     def __init__(self, enabled: bool = True) -> None:
@@ -874,8 +989,19 @@ class MusicPlayer:
         self._sounds: dict[str, Any] = {}
         self._current: str | None = None
         self._playing: Any = None
+        self._pending: str | None = None
+        self._pending_fade = 600
+        self._warm_started = False
+        self._warm_thread: Any = None
         self._fmt = _init_mixer() if self._enabled else None
         self._ok = self._fmt is not None
+        self._channel = None
+        if self._ok:
+            try:
+                pygame.mixer.set_reserved(1)      # channel 0 belongs to the music
+                self._channel = pygame.mixer.Channel(0)
+            except Exception:
+                self._channel = None
 
     # ------------------------------------------------------------- internals
     def _sound(self, track: str):
@@ -887,11 +1013,7 @@ class MusicPlayer:
             data = _pcm_for(track)
             if not data:
                 return None
-            if freq != SAMPLE_RATE or channels != 1:
-                floats = _from_pcm(data)
-                if freq != SAMPLE_RATE:
-                    floats = _resample(floats, SAMPLE_RATE, freq)
-                data = _pcm(floats, channels)
+            data = _convert_pcm(data, freq, channels)
             snd = pygame.mixer.Sound(buffer=data)
             snd.set_volume(self._master)
             self._sounds[track] = snd
@@ -899,6 +1021,57 @@ class MusicPlayer:
         except Exception:
             self._ok = False
             return None
+
+    def _start(self, track: str, fade_ms: int) -> bool:
+        """Start a track on the music channel, replacing whatever was playing."""
+        snd = self._sound(track)
+        if snd is None:
+            return False
+        try:
+            if self._channel is not None:
+                self._channel.stop()             # one channel: no layering, ever
+                self._channel.set_volume(self._master)
+                self._channel.play(snd, loops=-1, fade_ms=max(0, int(fade_ms)))
+            else:
+                if self._playing is not None:
+                    self._playing.stop()
+                snd.play(loops=-1, fade_ms=max(0, int(fade_ms)))
+            self._playing = snd
+            self._pending = None
+            return True
+        except Exception:
+            self._ok = False
+            return False
+
+    def prewarm(self) -> None:
+        """Synthesise every track in a background thread (safe to call twice)."""
+        if not self._ok or self._warm_started:
+            return
+        self._warm_started = True
+
+        def work() -> None:
+            # most likely to be needed first, and a short yield between tracks so the
+            # game loop keeps its share of the interpreter on the very first run
+            for name in ("title", "village", "forest", "battle", "swamp",
+                         "highlands", "ruins", "graveyard"):
+                if name not in self._sounds:
+                    self._sound(name)
+                time.sleep(0.01)
+
+        self._warm_thread = threading.Thread(target=work, name="music-prewarm",
+                                            daemon=True)
+        self._warm_thread.start()
+
+    def update(self) -> None:
+        """Called from the game loop: start a track that was still being synthesised."""
+        if self._pending and self._pending in self._sounds:
+            track = self._pending
+            if self._start(track, self._pending_fade):
+                self._current = track
+
+    @property
+    def ready(self) -> bool:
+        return all(name in self._sounds for name in TRACK_ORDER)
 
     # ----------------------------------------------------------- public API
     @property
@@ -915,30 +1088,30 @@ class MusicPlayer:
     def play(self, track: str, fade_ms: int = 700) -> None:
         if track not in TRACKS:
             return
-        self._current = track
         if not self._ok:
+            self._current = track
             return
-        try:
-            snd = self._sound(track)
-            if snd is None:
-                return
-            if self._playing is not None and self._playing is not snd:
-                self._playing.fadeout(max(0, int(fade_ms)))
-            snd.set_volume(self._master)
-            snd.play(loops=-1, fade_ms=max(0, int(fade_ms)))
-            self._playing = snd
-        except Exception:
-            self._ok = False
+        if track == self._current and self._pending is None and self._playing is not None:
+            return                       # already playing this one: do not restart it
+        self._current = track
+        if track in self._sounds:
+            if not self._start(track, fade_ms):
+                self._current = None
+            return
+        # not synthesised yet: the prewarm thread will finish it, update() starts it
+        self._pending = track
+        self._pending_fade = fade_ms
 
     def stop(self, fade_ms: int = 400) -> None:
         self._current = None
+        self._pending = None
         if not self._ok:
             return
         try:
-            for snd in self._sounds.values():
-                snd.fadeout(max(0, int(fade_ms)))
-            if self._playing is not None:
-                self._playing.stop()
+            if self._channel is not None:
+                self._channel.fadeout(max(0, int(fade_ms)))
+            elif self._playing is not None:
+                self._playing.fadeout(max(0, int(fade_ms)))
             self._playing = None
         except Exception:
             self._ok = False
@@ -949,6 +1122,11 @@ class MusicPlayer:
         except (TypeError, ValueError):
             v = 0.0
         self._master = v
+        if self._channel is not None:
+            try:
+                self._channel.set_volume(v)
+            except Exception:
+                pass
         for snd in self._sounds.values():
             try:
                 snd.set_volume(v)

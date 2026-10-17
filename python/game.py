@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel RPG Adventure 2.2 — Python / pygame-ce.
+"""Pixel patch 2.3 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -259,6 +259,7 @@ class Game:
             if action in self.keys and isinstance(code, int):
                 self.keys[action] = code
         self.music.set_volume(self.settings["music_volume"])
+        self.music.prewarm()          # synthesise every track in the background
         self.music_track: str | None = None
         self.combat_t = 0.0
         self.battle_track = False
@@ -888,14 +889,23 @@ class Game:
         return nodes
 
     def nearest_node(self, max_dist: float = HARVEST_RANGE) -> dict | None:
+        """Closest harvestable tile. Looks only at the tiles around the player —
+        scanning all ~4000 nodes every frame cost about 1.4 s per 300 frames."""
+        nodes = self.harvest_nodes()
         px, py = self.player["x"], self.player["y"]
+        cx, cy = int(px), int(py)
+        span = int(math.ceil(max_dist)) + 1
         best, best_d = None, max_dist
-        for (nx, ny), node in self.harvest_nodes().items():
-            if self.harvest_done.get((nx, ny), 0.0) > self.time:
-                continue
-            d = math.hypot(nx + 0.5 - px, ny + 0.5 - py)
-            if d < best_d:
-                best, best_d = node, d
+        for ty in range(cy - span, cy + span + 1):
+            for tx in range(cx - span, cx + span + 1):
+                node = nodes.get((tx, ty))
+                if node is None:
+                    continue
+                if self.harvest_done.get((tx, ty), 0.0) > self.time:
+                    continue
+                d = math.hypot(tx + 0.5 - px, ty + 0.5 - py)
+                if d < best_d:
+                    best, best_d = node, d
         return best
 
     def harvest(self, node: dict) -> str:
@@ -961,6 +971,7 @@ class Game:
     def update_music(self, dt: float, in_combat: bool) -> None:
         if not self.music_on:
             return
+        self.music.update()           # start a track that was still being synthesised
         if in_combat:
             self.combat_t = COMBAT_HOLD
         else:
@@ -1201,6 +1212,8 @@ class Game:
     def update_mobs(self, dt: float) -> None:
         p = self.player
         st = self.stats()
+        px, py = p["x"], p["y"]
+        far = 30.0                     # mobs further away than this are asleep
         for m in self.mobs:
             if not m["alive"]:
                 continue
@@ -1211,7 +1224,9 @@ class Game:
             m["slow"] = max(0.0, m["slow"] - dt)
             if m["stun"] > 0:
                 continue
-            dist = math.hypot(p["x"] - m["x"], p["y"] - m["y"])
+            dist = math.hypot(px - m["x"], py - m["y"])
+            if dist > far and m["flee"] <= 0:
+                continue               # nothing can see or reach you from that far
             speed = m["speed"] * (0.55 if m["slow"] > 0 else 1.0)
             stealth = p["stealth"] > 0
             if m["flee"] > 0:                      # animals run away when hurt

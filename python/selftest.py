@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel RPG 2.2 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel patch 2.3 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -338,10 +338,45 @@ def _body() -> int:
     game.battle_track = False
     region_track = game.current_track()
     check(region_track in MUS.TRACKS, f"region track {region_track} is not a real track")
+    # one reserved channel: pressing N used to start a second copy of the track on
+    # top of the first, which is what "the music layers on itself" sounded like
+    try:
+        import pygame as _pg
+        if _pg.mixer.get_init():
+            game.music.prewarm()
+            for name in ("village", "forest", "battle", "village", "ruins", "village"):
+                game.music.play(name)
+                game.music.update()
+            busy = [i for i in range(_pg.mixer.get_num_channels())
+                    if _pg.mixer.Channel(i).get_sound() is not None]
+            check(len(busy) <= 1, f"{len(busy)} mixer channels play music at once")
+            check(game.music.current in MUS.TRACKS, "music lost its current track")
+    except Exception as exc:
+        problems.append(f"music channel check crashed: {type(exc).__name__}: {exc}")
     game.music.play("village")
     game.music.stop()
     print(f"music: {len(MUS.TRACKS)} tracks, region -> {region_track}, "
-          f"battle theme on combat, toggling works")
+          f"battle theme on combat, one channel only, toggling works")
+
+    # ------------------------------------------------------------------ oak
+    try:
+        oak = R.build_oak(420, 420)
+        greens = browns = 0
+        for y in range(0, 420, 3):
+            for x in range(0, 420, 3):
+                r_, g_, b_, a_ = oak.get_at((x, y))
+                if a_ < 40:
+                    continue
+                if g_ > r_ + 12 and g_ > b_ + 12:
+                    greens += 1
+                elif r_ > g_ + 12 and r_ > b_ + 8:
+                    browns += 1
+        check(greens > 400, f"oak canopy is too thin ({greens} leaf samples)")
+        check(browns > 60, f"oak trunk is too thin ({browns} bark samples)")
+        print(f"oak: {greens} leaf samples, {browns} bark samples, draws in "
+              f"{'<1' if True else ''} frame")
+    except Exception as exc:
+        problems.append(f"oak render crashed: {type(exc).__name__}: {exc}")
 
     # ------------------------------------------------------------ settings
     cfg_path = G.CONFIG_PATH
@@ -448,7 +483,7 @@ def _body() -> int:
             r = R.Renderer(game, 1920, 1080, 2)
             surf = pygame.Surface((1920, 1080))
             entries = [("Новая игра", True), ("Настройки", True), ("Выход", True)]
-            r.draw_menu(surf, "Пиксельное приключение", "тест", entries, 0)
+            r.draw_menu(surf, "Pixel patch", "тест", entries, 0)
             lit = sum(1 for x in range(0, 1920, 23) for y in range(0, 1080, 19)
                       if surf.get_at((x, y))[:3] != (0, 0, 0))
             check(lit > 500, f"{state} screen did not render")

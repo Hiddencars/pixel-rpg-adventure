@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Build PixelRPG.exe — runs the headless self-test first, then PyInstaller.
+"""Build PixelPatch.exe — runs the headless self-test first, then PyInstaller.
 
 Usage:  python build_exe.py
-Output: dist/PixelRPG.exe
+Output: dist/PixelPatch.exe
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 GAME = HERE / "game.py"
-NAME = "PixelRPG"
+NAME = "PixelPatch"
 MODULES = ("art", "sprites", "items", "skills", "sounds", "music", "quests", "world",
            "render", "selftest")
 

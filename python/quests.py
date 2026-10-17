@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Quests for Pixel RPG 2.0 — 50 jobs handed out by the seven peaceful NPCs.
+"""Quests for Pixel patch 2.0 — 50 jobs handed out by the seven peaceful NPCs.
 
 Each quest is a plain dict: id, giver (peasant | farmer | smith | merchant |
 elder | guard | healer), title, desc (one Russian sentence), kind, target,

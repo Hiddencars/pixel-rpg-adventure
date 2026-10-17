@@ -1,16 +1,16 @@
-# Pixel RPG Adventure
+# Pixel patch
 
 Пиксельная RPG с открытым миром: остров из девяти областей, 19 существ, торговля,
 звук и дерево из 121 навыка на одном большом дубе. Две реализации одной игры:
 
 | Версия | Технологии | Где запускать |
 |---|---|---|
-| **2.2** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelRPG.exe` |
+| **2.3** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
 | **1.0** | HTML + p5.js | `index.html` в браузере |
 
 ## Играть
 
-**Скачать `.exe`:** вкладка [Releases](../../releases) → `PixelRPG.exe` (Windows,
+**Скачать `.exe`:** вкладка [Releases](../../releases) → `PixelPatch.exe` (Windows,
 Python не требуется) — двойной щелчок.
 
 **Веб-версия 1.0:** https://hiddencars.github.io/pixel-rpg-adventure/
@@ -145,7 +145,7 @@ python -m venv .venv
 | 5 | **1920×1080 (Full HD)** | ×2 |
 
 Выбор сохраняется в `~/.pixel_rpg_adventure_config.json`. Можно задать сразу:
-`PixelRPG.exe --res 1920x1080` (или `--fullscreen`). Мир масштабируется только
+`PixelPatch.exe --res 1920x1080` (или `--fullscreen`). Мир масштабируется только
 целочисленно, поэтому пиксели остаются резкими; текст рисуется в родном разрешении.
 
 ## Сборка `.exe`
@@ -154,7 +154,7 @@ python -m venv .venv
 cd python
 python build_exe.py
 ```
-Результат — `python/dist/PixelRPG.exe`. Скрипт сначала прогоняет
+Результат — `python/dist/PixelPatch.exe`. Скрипт сначала прогоняет
 `game.py --selftest` (headless-проверка мира, боя, лута, торговли, дерева навыков,
 сохранения и отрисовки всех экранов) и собирает exe только если проверка прошла.
 

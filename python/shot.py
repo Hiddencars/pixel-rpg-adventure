@@ -132,7 +132,7 @@ def shot_menu():
     surf = pygame.Surface((W, H))
     entries = [("Новая игра", True), ("Продолжить   — нет сохранения", False),
                ("Настройки", True), ("Выход", True)]
-    r.draw_menu(surf, "Пиксельное приключение",
+    r.draw_menu(surf, "Pixel patch",
                 "Большой мир • 19 существ • 121 навык • торговля", entries, 0,
                 note="Стрелки / W S — выбор     Enter — подтвердить     Esc — выход")
     save(surf, "shot2_menu.png")

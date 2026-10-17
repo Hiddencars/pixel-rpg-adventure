@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pre-rendered world art for Pixel RPG.
+"""Pre-rendered world art for Pixel patch.
 
 Everything here is procedural — no external asset files — but instead of drawing
 shapes straight into the frame every tick, each tile variant and each object is

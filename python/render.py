@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel RPG 2.2.
+"""Rendering, UI screens and the main loop for Pixel patch 2.3.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -37,6 +37,8 @@ UI_BG = (12, 15, 24)
 UI_EDGE = (96, 118, 158)
 GOLD = (240, 210, 120)
 OAK_GREEN = ((58, 122, 60), (74, 142, 68), (96, 164, 78), (124, 186, 92))
+OAK_LEAF = ((30, 62, 38), (48, 96, 52), (72, 128, 62), (108, 168, 82))
+OAK_BARK = ((46, 32, 22), (84, 58, 37), (118, 84, 54))
 
 
 def _wrap(text: str, width: int) -> list[str]:
@@ -90,93 +92,263 @@ def _branch_directions() -> dict[str, tuple[float, float, float]]:
     return out
 
 
+def _oak_bezier(p0, p1, p2, t):
+    """Quadratic bezier point."""
+    u = 1.0 - t
+    return (u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
+            u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1])
+
+
+def _oak_limb(screen, P, unit_px, p0, ang, length, width, depth, rng,
+              tips, twigs):
+    """One curved, tapered limb plus its children; collects foliage anchors."""
+    dx, dy = math.cos(ang), math.sin(ang)
+    # keep every limb inside the canvas: recursion used to walk off the top edge
+    p2 = (min(0.935, max(0.065, p0[0] + dx * length)),
+          min(0.94, max(0.055, p0[1] + dy * length)))
+    bend = rng.uniform(-0.22, 0.22) * length
+    p1 = (p0[0] + dx * length * 0.55 - dy * bend,
+          p0[1] + dy * length * 0.55 + dx * bend)
+    steps = 6 if depth > 1 else 4
+    prev = p0
+    for i in range(1, steps + 1):
+        t = i / steps
+        cur = _oak_bezier(p0, p1, p2, t)
+        w0 = width * (1.0 - 0.55 * (i - 1) / steps)
+        w1 = width * (1.0 - 0.55 * t)
+        nx, ny = -(cur[1] - prev[1]), (cur[0] - prev[0])
+        ln = math.hypot(nx, ny) or 1.0
+        nx, ny = nx / ln, ny / ln
+        quad = [P((prev[0] + nx * w0, prev[1] + ny * w0)),
+                P((cur[0] + nx * w1, cur[1] + ny * w1)),
+                P((cur[0] - nx * w1, cur[1] - ny * w1)),
+                P((prev[0] - nx * w0, prev[1] - ny * w0))]
+        pygame.draw.polygon(screen, OAK_BARK[0], quad)
+        # lit edge on the upper-left, like every other sprite in the game
+        lit = [P((prev[0] + nx * w0 * 0.75, prev[1] + ny * w0 * 0.75)),
+               P((cur[0] + nx * w1 * 0.75, cur[1] + ny * w1 * 0.75)),
+               P((cur[0] + nx * w1 * 0.15, cur[1] + ny * w1 * 0.15)),
+               P((prev[0] + nx * w0 * 0.15, prev[1] + ny * w0 * 0.15))]
+        pygame.draw.polygon(screen, OAK_BARK[2], lit)
+        prev = cur
+    if depth > 0:
+        for s in (-1, 1):
+            if rng.random() < 0.82:
+                _oak_limb(screen, P, unit_px,
+                          p2, ang + s * rng.uniform(0.28, 0.55),
+                          length * rng.uniform(0.52, 0.68), width * 0.62,
+                          depth - 1, rng, tips, twigs)
+    else:
+        tips.append((p2[0], p2[1], width))
+    if depth == 0:
+        t = 0.62
+        pt = _oak_bezier(p0, p1, p2, t)
+        twigs.append((pt[0], pt[1], width))
+
+
+def _leaf_blob(screen, P, cx, cy, r, col, phase, lobes=7, jag=0.15, squash=0.88):
+    """A lobed silhouette: a circle with a scalloped edge reads as foliage, not a ball."""
+    pts = []
+    steps = 44
+    for i in range(steps):
+        a = i / steps * math.tau
+        rr = r * (1.0 + jag * math.sin(lobes * a + phase)
+                  + 0.05 * math.sin(3 * a + phase * 2.0))
+        pts.append(P((cx + math.cos(a) * rr, cy + math.sin(a) * rr * squash)))
+    pygame.draw.polygon(screen, col, pts)
+
+
+def _oak_cluster(screen, P, unit_px, cx, cy, r, rng, dense=1.0):
+    """A leaf mass built from many small leaves, not circles.
+
+    Each cluster is a dark volume shadow, a dense fill of overlapping leaf shapes
+    in two greens, a sunlit crown of light leaves on the upper-left, and a ragged
+    rim of individual leaves that poke past the silhouette."""
+    leaf_w = max(3, int(r * 0.30 * unit_px))
+    leaf_h = max(2, int(r * 0.19 * unit_px))
+
+    def leaf(x, y, tone, big=1.0):
+        rect = pygame.Rect(0, 0, max(3, int(leaf_w * big)), max(2, int(leaf_h * big)))
+        rect.center = (int(P((x, y))[0]), int(P((x, y))[1]))
+        pygame.draw.ellipse(screen, tone, rect)
+
+    # shadow volume under the mass
+    shadow = pygame.Rect(0, 0, max(4, int(r * 2.05 * unit_px)),
+                         max(3, int(r * 1.9 * unit_px)))
+    shadow.center = (int(P((cx, cy + r * 0.10))[0]), int(P((cx, cy + r * 0.10))[1]))
+    pygame.draw.ellipse(screen, OAK_LEAF[0], shadow)
+    # body: overlapping mid leaves filling the disc
+    for i in range(int(26 * dense)):
+        a = rng.random() * math.tau
+        d = r * (0.85 * rng.random() ** 0.5)
+        leaf(cx + math.cos(a) * d, cy + math.sin(a) * d * 0.88,
+             OAK_LEAF[2] if rng.random() < 0.22 else OAK_LEAF[1],
+             1.15 if rng.random() < 0.3 else 0.9)
+    # a few dark gaps for depth
+    for i in range(int(4 * dense)):
+        a = rng.random() * math.tau
+        d = (0.2 + rng.random() * 0.5) * r
+        leaf(cx + math.cos(a) * d, cy + math.sin(a) * d * 0.85,
+             OAK_LEAF[0], 1.2)
+    # sunlit crown: light leaves crowded into the upper-left arc
+    for i in range(int(15 * dense)):
+        a = rng.uniform(math.pi * 0.75, math.pi * 2.0)
+        d = r * rng.uniform(0.15, 0.8)
+        leaf(cx + math.cos(a) * d - r * 0.12,
+             cy + math.sin(a) * d * 0.8 - r * 0.16,
+             OAK_LEAF[2] if rng.random() < 0.55 else OAK_LEAF[3], 0.85)
+    # ragged rim: individual leaves sticking out past the silhouette
+    for i in range(int(14 * dense)):
+        a = rng.random() * math.tau
+        rr = r * rng.uniform(0.88, 1.12)
+        lx = cx + math.cos(a) * rr
+        ly = cy + math.sin(a) * rr * 0.9
+        lit = (math.cos(a) > -0.6 and math.sin(a) < 0.3)
+        leaf(lx, ly, OAK_LEAF[3] if (lit and rng.random() < 0.5) else OAK_LEAF[1], 0.8)
+
+
 def draw_oak(screen: pygame.Surface, to_screen, unit_px: float) -> None:
-    """Draw the oak in tree coordinates; `to_screen` maps (x, y) in 0..1 to pixels."""
+    """Draw the oak in tree coordinates; `to_screen` maps (x, y) in 0..1 to pixels.
+
+    The old version sprinkled flat circles over a stick and read as green confetti.
+    This one builds a real silhouette: a curved tapered trunk with bark and roots,
+    limbs that fork three levels deep along the branch directions (so every skill
+    branch grows out of a visible limb), and foliage made of layered leaf masses
+    with a dark under-layer, a lit crown and a ragged leafy rim.
+    """
     rng = random.Random(20261017)
 
     def P(p):
         return to_screen(p)
 
-    def poly(col, pts):
-        pygame.draw.polygon(screen, col, [P(p) for p in pts])
-
-    def line(col, a, b, w):
-        pygame.draw.line(screen, col, P(a), P(b), max(1, int(w * unit_px)))
-
-    def blob(col, c, r):
-        pygame.draw.circle(screen, col, P(c), max(1, int(r * unit_px)))
-
     root = SK.position_of(SK.ROOT)
-    bx, by = 0.5, 0.985                      # base of the trunk
-    trunk_top = 0.52
-    hb, ht = 0.058, 0.020
+    bx, by = 0.5, 0.972                      # base of the trunk
+    trunk_top = 0.505
+    hb, ht = 0.062, 0.021
 
-    # roots flaring out at the base
-    for sx in (-1, 1):
-        poly((66, 46, 30), [(bx + sx * hb * 0.3, by - 0.075), (bx + sx * hb * 3.2, by),
-                            (bx + sx * hb * 0.4, by)])
-    # trunk: three tonal bands, dark on the left, lit on the right
-    poly((70, 49, 32), [(bx - hb, by), (bx - ht, trunk_top), (bx + ht, trunk_top), (bx + hb, by)])
-    poly((96, 68, 44), [(bx - hb * 0.72, by), (bx - ht * 0.55, trunk_top),
-                        (bx + ht * 0.35, trunk_top), (bx + hb * 0.42, by)])
-    poly((122, 90, 58), [(bx - hb * 0.34, by), (bx - ht * 0.2, trunk_top),
-                         (bx + ht * 0.05, trunk_top), (bx - hb * 0.02, by)])
-    for i in range(30):                      # bark grooves
-        t = i / 29
-        y = trunk_top + (by - trunk_top) * t
-        spread = hb * (0.2 + 0.75 * (1 - t))
-        x = bx - spread + rng.random() * spread * 2
-        pygame.draw.line(screen, (54, 37, 24), P((x, y)),
-                         P((x + rng.uniform(-0.004, 0.004), y + 0.02)), max(1, int(unit_px * 0.004)))
+    # ---------------------------------------------------------------- backdrop
+    # soft canopy glow so the tree sits in a lit space instead of on flat black
+    glow = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
+    for i in range(9, 0, -1):
+        r = unit_px * 0.62 * i / 9
+        a = int(9 * (1 - i / 9) ** 1.5)
+        if a <= 0:
+            continue
+        pygame.draw.circle(glow, (60, 108, 74, a), P((0.5, 0.36)), int(r))
+    screen.blit(glow, (0, 0))
 
-    # limbs: one per branch, aimed at that branch's outermost nodes
+    # ground: dark band plus a contact shadow under the trunk
+    pygame.draw.ellipse(screen, (18, 26, 22),
+                        pygame.Rect(int(P((0.24, 0.955))[0]), int(P((0.24, 0.955))[1]),
+                                    int(unit_px * 0.52), int(unit_px * 0.055)))
+    pygame.draw.ellipse(screen, (26, 36, 28),
+                        pygame.Rect(int(P((0.34, 0.958))[0]), int(P((0.34, 0.958))[1]),
+                                    int(unit_px * 0.32), int(unit_px * 0.034)))
+
+    # ------------------------------------------------------------------- roots
+    for sx, spread in ((-1, 0.13), (-1, 0.085), (1, 0.10), (1, 0.15)):
+        x0 = bx + sx * hb * 0.5
+        pygame.draw.polygon(screen, OAK_BARK[0], [
+            P((x0, by - 0.085)), P((bx + sx * spread, by + 0.004)),
+            P((bx + sx * spread * 0.55, by + 0.012)), P((x0 - sx * hb * 0.35, by - 0.02))])
+        pygame.draw.polygon(screen, OAK_BARK[1], [
+            P((x0, by - 0.075)), P((bx + sx * spread * 0.92, by - 0.002)),
+            P((bx + sx * spread * 0.5, by + 0.004)), P((x0 - sx * hb * 0.1, by - 0.02))])
+
+    # ------------------------------------------------------------------ trunk
+    samples = []
+    for i in range(13):
+        t = i / 12
+        y = by + (trunk_top - by) * t
+        sway = 0.016 * math.sin(t * 2.1) - 0.006 * t
+        w = hb * (1 - t) + ht * t
+        samples.append((bx + sway, y, w))
+    left = [P((x - w, y)) for x, y, w in samples]
+    right = [P((x + w, y)) for x, y, w in samples]
+    body = left + right[::-1]
+    pygame.draw.polygon(screen, OAK_BARK[0], body)
+    # mid tone down the middle, lit band on the left (light comes from the left)
+    mid_l = [P((x - w * 0.35, y)) for x, y, w in samples]
+    mid_r = [P((x + w * 0.45, y)) for x, y, w in samples]
+    pygame.draw.polygon(screen, OAK_BARK[1], mid_l + mid_r[::-1])
+    lit_l = [P((x - w * 0.92, y)) for x, y, w in samples]
+    lit_r = [P((x - w * 0.5, y)) for x, y, w in samples]
+    pygame.draw.polygon(screen, OAK_BARK[2], lit_l + lit_r[::-1])
+    # bark: vertical grooves and two knots
+    for i in range(26):
+        t = rng.random()
+        x, y, w = samples[min(12, int(t * 12))]
+        off = rng.uniform(-0.72, 0.55)
+        gx = x + w * off
+        pygame.draw.line(screen, OAK_BARK[0], P((gx, y)),
+                         P((gx + rng.uniform(-0.004, 0.004), y + rng.uniform(0.02, 0.05))),
+                         max(1, int(unit_px * 0.004)))
+    for ky in (0.72, 0.60):
+        kx, _, kw = samples[int((by - ky) / (by - trunk_top) * 12)]
+        pygame.draw.ellipse(screen, OAK_BARK[0],
+                            pygame.Rect(int(P((kx - kw * 0.3, ky))[0]),
+                                        int(P((kx - kw * 0.3, ky))[1]),
+                                        max(3, int(kw * 0.5 * unit_px)),
+                                        max(3, int(kw * 0.42 * unit_px))))
+
+    # ------------------------------------------------------------------- limbs
     dirs = _branch_directions()
+    tips: list[tuple[float, float, float]] = []
+    twigs: list[tuple[float, float, float]] = []
     for branch in SK.BRANCHES:
         dx, dy, length = dirs[branch["id"]]
-        start = (bx + dx * 0.05, trunk_top + 0.06 + dy * 0.05)
-        mid = (bx + dx * length * 0.55, trunk_top + 0.05 + dy * length * 0.55)
-        end = (bx + dx * length * 0.97, trunk_top + 0.04 + dy * length * 0.97)
-        width = 0.030 if abs(dx) < 0.2 else 0.026
-        line((84, 58, 37), start, mid, width)
-        line((108, 76, 48), (start[0], start[1] - 0.006), (mid[0], mid[1] - 0.008), width * 0.42)
-        line((72, 50, 32), mid, end, width * 0.6)
-        for k in range(5):                   # twigs along the limb
-            t = 0.25 + k * 0.16
-            tx = start[0] + (end[0] - start[0]) * t
-            ty = start[1] + (end[1] - start[1]) * t
-            for s in (-1, 1):
-                line((88, 62, 40), (tx, ty), (tx + s * 0.05, ty - 0.035), 0.008)
-    # foliage: clusters hugging the limbs, kept sparse so nodes stay readable
-    for branch in SK.BRANCHES:
-        dx, dy, length = dirs[branch["id"]]
-        for i in range(26):
-            t = 0.16 + rng.random() * 0.95
-            cx = bx + dx * length * t + rng.uniform(-0.045, 0.045)
-            cy = trunk_top + 0.04 + dy * length * t + rng.uniform(-0.042, 0.042)
-            r = 0.019 + rng.random() * 0.020
-            blob(OAK_GREEN[0], (cx, cy), r)
-            blob(OAK_GREEN[1], (cx - r * 0.16, cy - r * 0.16), r * 0.7)
-            if rng.random() < 0.55:
-                blob(OAK_GREEN[2], (cx - r * 0.34, cy - r * 0.36), r * 0.4)
-    # crown: a soft mass of leaves over the middle of the canopy
-    for i in range(80):
+        ang = math.atan2(dy, dx)
+        start = (bx + dx * 0.045, trunk_top + 0.03 + dy * 0.02)
+        # `length` is measured from the ROOT, so subtract the trunk: without this the
+        # limbs shot straight through the top of the canvas and looked cropped.
+        reach = max(0.10, length - (by - trunk_top) * 0.98)
+        _oak_limb(screen, P, unit_px, start, ang, reach, 0.021, 2,
+                  rng, tips, twigs)
+
+    # ---------------------------------------------------------------- foliage
+    # twigs first so every leaf mass is visibly attached to wood
+    for (tx, ty, w) in tips:
+        for _ in range(3):
+            a = rng.random() * math.tau
+            pygame.draw.line(screen, OAK_BARK[0], P((tx, ty)),
+                             P((tx + math.cos(a) * 0.035, ty + math.sin(a) * 0.035)), 1)
+    for (tx, ty, w) in twigs:
+        pygame.draw.line(screen, OAK_BARK[0], P((tx, ty)),
+                         P((tx - (tx - bx) * 0.08, ty - (ty - trunk_top) * 0.08)), 1)
+    # one dark silhouette under everything: without it the white page showed through
+    # the gaps between clusters and the crown looked like floating blobs
+    for (ccx, ccy, rr, sq) in ((0.5, 0.34, 0.34, 0.80), (0.5, 0.30, 0.28, 0.72)):
+        _leaf_blob(screen, P, ccx, ccy, rr, OAK_LEAF[0], 1.7, lobes=9, jag=0.10, squash=sq)
+        _leaf_blob(screen, P, ccx, ccy - rr * 0.04, rr * 0.93, OAK_LEAF[1], 2.4,
+                   lobes=8, jag=0.12, squash=sq)
+    # a connected crown: overlapping masses in a disc around the branch fan
+    for i in range(34):
         a = rng.random() * math.tau
-        d = rng.random() ** 0.6
-        cx = bx + math.cos(a) * d * 0.44
-        cy = 0.30 + math.sin(a) * d * 0.22
-        r = 0.014 + rng.random() * 0.016
-        blob(OAK_GREEN[0], (cx, cy), r)
-        blob(OAK_GREEN[1], (cx - r * 0.2, cy - r * 0.2), r * 0.66)
-    for i in range(110):                     # dappled highlights
-        a = rng.random() * math.tau
-        d = rng.random() ** 0.7
-        cx = bx + math.cos(a) * d * 0.46
-        cy = 0.29 + math.sin(a) * d * 0.24
-        blob(OAK_GREEN[3], (cx, cy), 0.005 + rng.random() * 0.006)
-    # the ground the oak stands on
-    pygame.draw.line(screen, (44, 34, 24), P((0.02, 0.988)), P((0.98, 0.988)),
-                     max(2, int(unit_px * 0.012)))
-    blob((60, 44, 30), root, 0.012)
+        d = 0.30 * rng.random() ** 0.55          # fill the middle, not just a ring
+        cx = 0.5 + math.cos(a) * d
+        cy = 0.33 + math.sin(a) * d * 0.82
+        r = 0.050 + rng.random() * 0.024
+        _oak_cluster(screen, P, unit_px, cx, cy, r, rng, 0.85)
+    # the branch-tip clusters, the biggest ones
+    for (tx, ty, w) in tips:
+        _oak_cluster(screen, P, unit_px, tx, ty, 0.075 + rng.random() * 0.02, rng, 1.0)
+    for (tx, ty, w) in twigs:
+        _oak_cluster(screen, P, unit_px, tx, ty, 0.055 + rng.random() * 0.014, rng, 0.7)
+
+    # ------------------------------------------------------- ground details
+    for i in range(18):                      # grass tufts
+        gx = 0.30 + rng.random() * 0.40
+        gy = 0.962 + rng.random() * 0.016
+        for k in (-1, 0, 1):
+            pygame.draw.line(screen, (44, 76, 44), P((gx, gy)),
+                             P((gx + k * 0.006, gy - 0.012 - rng.random() * 0.008)), 1)
+    for mx in (0.40, 0.44, 0.60, 0.635):     # mushrooms at the roots
+        my = 0.958 + rng.random() * 0.008
+        pygame.draw.rect(screen, (206, 196, 176),
+                         pygame.Rect(int(P((mx, my))[0]) - 1, int(P((mx, my))[1]) - 4, 2, 4))
+        pygame.draw.ellipse(screen, (168, 62, 52),
+                            pygame.Rect(int(P((mx, my))[0]) - 3, int(P((mx, my))[1]) - 6, 6, 4))
+    pygame.draw.circle(screen, (70, 54, 34), P(root), max(2, int(unit_px * 0.012)))
 
 
 def build_oak(w: int, h: int) -> pygame.Surface:
@@ -201,7 +373,27 @@ class Renderer:
         self.tree_rects: list[tuple[pygame.Rect, str]] = []
         self.shop_rects: list[tuple[pygame.Rect, int]] = []
         self.minimap = self._build_minimap()
+        self.minimap_scaled = pygame.transform.scale(self.minimap, (self.s(200), self.s(102)))
         self.t = 0.0
+        self._text_cache: dict = {}
+        self._scaled_cache: dict = {}
+        self._marker_font = pygame.font.Font(None, 18)
+        self._npc_quest_state: dict[str, tuple[int, int]] = {}
+        self._quest_state_frame = -1
+        self._light_objects = None
+        self._shade_key: tuple[int, int] | None = None
+        self._shade = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self._oak_src: pygame.Surface | None = None
+        self._oak_cache: dict[int, pygame.Surface] = {}
+        self._build_glows()
+        # three baked bush variants (they used to be redrawn every frame)
+        self._bush_surfs = []
+        for i in range(3):
+            surf = pygame.Surface((TILE, TILE), pygame.SRCALPHA)
+            art._canopy(surf, TILE / 2, TILE * 0.52, 11,
+                        (art.LEAF_D, art.LEAF, art.LEAF_L, art.LEAF_XL),
+                        random.Random(1000 + i * 77), lobes=5)
+            self._bush_surfs.append(surf)
 
     # ------------------------------------------------------------ geometry
     def resize(self, width: int, height: int, zoom: int) -> None:
@@ -220,9 +412,71 @@ class Renderer:
         self.font = _font(max(13, round(15 * self.ui)))
         self.font_big = _font(max(17, round(20 * self.ui)))
         self.font_title = _font(max(26, round(38 * self.ui)))
+        if getattr(self, "minimap", None) is not None:
+            self.minimap_scaled = pygame.transform.scale(
+                self.minimap, (self.s(200), self.s(102)))
 
     def s(self, v: float) -> int:
         return int(round(v * self.ui))
+
+    def text(self, font, text: str, *args) -> pygame.Surface:
+        """Cached font rendering: the HUD asks for the same strings every frame.
+
+        Accepts both ``text(font, s, color)`` and the raw ``render`` signature
+        ``text(font, s, True, color)`` so call sites can stay as they were."""
+        color = args[-1] if args else (255, 255, 255)
+        try:
+            col = tuple(color)
+        except TypeError:
+            col = (255, 255, 255)
+        key = (id(font), text, col)
+        surf = self._text_cache.get(key)
+        if surf is None:
+            if len(self._text_cache) > 900:
+                self._text_cache.clear()
+            surf = font.render(text, True, col)
+            self._text_cache[key] = surf
+        return surf
+
+    def _build_glows(self) -> None:
+        """Pre-render the soft light discs once; per frame only the alpha changes."""
+        self._glow_cache = {}
+        # Concentric circles banded badly (they read as a flat white disc), so the
+        # falloff is a real per-pixel gradient, built once per light kind.
+        for kind, (r, col, a) in {"campfire": (44, (255, 168, 84), 92),
+                                  "lamp": (34, (255, 214, 138), 70),
+                                  "house": (38, (255, 208, 146), 50)}.items():
+            size = r * 2
+            surf = pygame.Surface((size, size), pygame.SRCALPHA)
+            for y in range(size):
+                dy = y - r + 0.5
+                for x in range(size):
+                    dx = x - r + 0.5
+                    d = math.hypot(dx, dy) / r
+                    if d >= 1.0:
+                        continue
+                    alpha = int(a * (1.0 - d) ** 2.1)
+                    if alpha > 0:
+                        surf.set_at((x, y), (col[0], col[1], col[2], alpha))
+            self._glow_cache[kind] = surf
+
+    def _oak_bitmap(self, unit: float) -> pygame.Surface:
+        """Cached, zoom-scaled oak bitmap for the skill screen."""
+        key = int(round(unit / 8.0)) * 8
+        if self._oak_src is None:
+            self._oak_src = build_oak(1400, 1400)
+        cached = self._oak_cache.get(key)
+        if cached is None:
+            if len(self._oak_cache) > 6:
+                self._oak_cache.clear()
+            cached = pygame.transform.smoothscale(self._oak_src, (key, key))
+            self._oak_cache[key] = cached
+        return cached
+
+    def _bush_surface(self, x: int, y: int) -> pygame.Surface:
+        """Bushes used to be drawn disc by disc every single frame; now they are baked."""
+        idx = (x * 31 + y * 17) % len(self._bush_surfs)
+        return self._bush_surfs[idx]
 
     def _build_minimap(self) -> pygame.Surface:
         """Pre-render the whole island once; the HUD draws a marker on top."""
@@ -260,9 +514,14 @@ class Renderer:
 
     def blit(self, surf: pygame.Surface, pos, scale: float = 1.0) -> None:
         if scale != 1.0:
-            w = max(1, int(surf.get_width() * scale))
-            h = max(1, int(surf.get_height() * scale))
-            surf = pygame.transform.scale(surf, (w, h))
+            key = (id(surf), round(scale, 2))
+            cached = self._scaled_cache.get(key)
+            if cached is None:
+                w = max(1, int(surf.get_width() * scale))
+                h = max(1, int(surf.get_height() * scale))
+                cached = pygame.transform.scale(surf, (w, h))
+                self._scaled_cache[key] = cached
+            surf = cached
         self.logical.blit(surf, pos)
 
     # ------------------------------------------------------------ main frame
@@ -335,9 +594,7 @@ class Renderer:
                 pygame.draw.circle(s, (240, 232, 150), (int(px + 16), int(py + 14)), 1)
                 pygame.draw.line(s, (96, 152, 70), (px + 16, py + 16), (px + 16, py + 22), 1)
             elif kind == "bush":
-                art._canopy(s, px + 16, py + 14, 11,
-                            (art.LEAF_D, art.LEAF, art.LEAF_L, art.LEAF_XL),
-                            random.Random(d["x"] * 31 + d["y"]), lobes=5)
+                s.blit(self._bush_surface(d["x"], d["y"]), (int(px), int(py)))
             elif kind in ("lamp", "campfire"):
                 data = self.objects.get(kind)
                 if data:
@@ -370,6 +627,13 @@ class Renderer:
     # -------------------------------------------------------------- entities
     def draw_entities(self, cam_x: float, cam_y: float) -> None:
         g = self.game
+        # refresh villager quest markers at most a few times a second, not per NPC/frame
+        if g.frame != self._quest_state_frame:
+            self._quest_state_frame = g.frame
+            self._npc_quest_state = {
+                n.get("kind", ""): (len(g.ready_quests(n.get("kind", ""))),
+                                    len(g.available_quests(n.get("kind", ""))))
+                for n in g.npcs if n.get("kind")}
         items: list[tuple[float, Callable[[], None]]] = []
         for o in g.world.objects:
             if not (cam_x - 4 < o["x"] < cam_x + self.view_w + 4
@@ -406,6 +670,15 @@ class Renderer:
             pygame.draw.ellipse(sh, (0, 0, 0, 120), (0, 0, sh.get_width(), sh.get_height()))
             self.logical.blit(sh, ((o["x"] - cam_x) * TILE + TILE / 2 - sh.get_width() / 2,
                                    (o["y"] - cam_y) * TILE + TILE * 1.25))
+        # A tree drawn in front of the hero used to hide him completely. Fade any
+        # object whose sprite covers the player and whose base is nearer the camera.
+        p = self.game.player
+        if o["y"] > p["y"] - 0.55 and surf.get_height() > TILE:
+            pax, pay = self.anchor(p["x"], p["y"], cam_x, cam_y)
+            prect = pygame.Rect(pax, pay - 24, 64, 88)
+            if pygame.Rect(px, py, surf.get_width(), surf.get_height()).colliderect(prect):
+                surf = surf.copy()
+                surf.set_alpha(140)
         self.logical.blit(surf, (px, py))
 
     def draw_glows(self, cam_x: float, cam_y: float) -> None:
@@ -413,9 +686,12 @@ class Renderer:
 
         Light used to be drawn together with its object, which meant a glow could land
         on top of the player and wash the sprite out; light belongs to the ground."""
-        for o in self.game.world.objects:
-            if not (o["kind"].startswith("house") or o["kind"] in ("campfire", "lamp")):
-                continue
+        if self._light_objects is None:
+            # scan the ~3000 world objects once, not every frame
+            self._light_objects = [o for o in self.game.world.objects
+                                   if o["kind"].startswith("house")
+                                   or o["kind"] in ("campfire", "lamp")]
+        for o in self._light_objects:
             if not (cam_x - 4 < o["x"] < cam_x + self.view_w + 4
                     and cam_y - 5 < o["y"] < cam_y + self.view_h + 5):
                 continue
@@ -425,22 +701,17 @@ class Renderer:
         """Warm light around windows, lamps and fires (added, so it lights the ground)."""
         kind = o["kind"]
         if kind == "campfire":
-            r, col, a = 38, (255, 176, 92), 78
+            key, r = "campfire", 44
         elif kind == "lamp":
-            r, col, a = 28, (255, 222, 148), 62
+            key, r = "lamp", 34
         else:
-            r, col, a = 34, (255, 214, 150), 46
+            key, r = "house", 38
+        surf = self._glow_cache.get(key)
+        if surf is None:
+            return
         pulse = 0.86 + 0.14 * math.sin(self.game.time * 3 + o["x"])
-        glow = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-        steps = 16
-        for i in range(steps, 0, -1):
-            rr = max(1, int(r * i / steps))
-            t = 1.0 - i / steps                 # 0 at the rim, ~1 at the centre
-            alpha = int(a * pulse * (t ** 1.9) * 0.55)
-            if alpha <= 0:
-                continue
-            pygame.draw.circle(glow, (*col, alpha), (r, r), rr)
-        self.logical.blit(glow, ((o["x"] - cam_x) * TILE + TILE / 2 - r,
+        surf.set_alpha(int(255 * min(1.0, pulse)))
+        self.logical.blit(surf, ((o["x"] - cam_x) * TILE + TILE / 2 - r,
                                  (o["y"] - cam_y) * TILE + TILE / 2 - r),
                           special_flags=pygame.BLEND_RGBA_ADD)
 
@@ -572,8 +843,9 @@ class Renderer:
         self.logical.blit(surf, (ax, ay + bob))
         g = self.game
         kind = n.get("kind", "")
-        turns = g.ready_quests(kind) if kind else []
-        offers = g.available_quests(kind) if kind else []
+        # quest state is refreshed once per frame for all villagers, not per NPC
+        state = self._npc_quest_state.get(kind, (0, 0))
+        turns, offers = state
         near = math.hypot(n["x"] - g.player["x"], n["y"] - g.player["y"]) < 2.2
         if turns or offers:
             # "!" over a villager with work, "?" when the work is done
@@ -583,8 +855,7 @@ class Renderer:
             col = (150, 240, 150) if turns else (255, 232, 140)
             pygame.draw.circle(self.logical, (16, 20, 30), (int(x), int(y)), 8)
             pygame.draw.circle(self.logical, col, (int(x), int(y)), 8, 2)
-            f = pygame.font.Font(None, 18)
-            txt = f.render(mark, True, col)
+            txt = self._marker_font.render(mark, True, col)
             self.logical.blit(txt, (x - txt.get_width() / 2, y - txt.get_height() / 2))
         if near:
             x = (n["x"] - cam_x + 0.5) * TILE
@@ -620,7 +891,7 @@ class Renderer:
                     and self.cam_y - 3 < n["y"] < self.cam_y + self.view_h + 3):
                 continue
             ax, ay = self.anchor(n["x"], n["y"], self.cam_x, self.cam_y)
-            label = self.font_small.render(n["name"], True, (248, 248, 254))
+            label = self.text(self.font_small, n["name"], True, (248, 248, 254))
             x = (ax + SP.SPRITE / 2) * self.zoom - label.get_width() / 2 + self.ox
             y = ay * self.zoom - label.get_height() - self.s(2) + self.oy
             pad_x, pad_y = self.s(7), self.s(3)
@@ -642,7 +913,7 @@ class Renderer:
                 continue
             ax, ay = self.anchor(m["x"], m["y"], self.cam_x, self.cam_y,
                                  m.get("scale", 1.0))
-            txt = self.font_small.render(f"{m['name']}  {max(0, int(m['hp']))}",
+            txt = self.text(self.font_small, f"{m['name']}  {max(0, int(m['hp']))}",
                                          True, (255, 190, 190))
             screen.blit(txt, ((ax + SP.SPRITE * m.get("scale", 1.0) / 2) * self.zoom
                               - txt.get_width() / 2 + self.ox,
@@ -651,30 +922,42 @@ class Renderer:
             alpha = max(0.0, 1 - f["t"] / f["life"])
             col = pygame.Color(f["color"])
             col.a = int(255 * alpha)
-            txt = self.font.render(f["text"], True, col)
+            txt = self.text(self.font, f["text"], True, col)
             lx, ly = self.to_logical(f["x"], f["y"])
             screen.blit(txt, (lx * self.zoom - txt.get_width() / 2 + self.ox,
                               ly * self.zoom - self.s(24) + self.oy))
 
     # ------------------------------------------------------------------- HUD
-    def panel(self, screen, rect, fill=(10, 12, 20, 224), border=UI_EDGE, radius=0) -> None:
-        surf = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
+    def panel(self, screen, rect, fill=(11, 13, 21, 243), border=UI_EDGE, radius=0) -> None:
+        """One panel style for the whole UI: opaque enough to keep text crisp, with a
+        soft drop shadow and a one-pixel inner highlight so it reads as a raised card
+        instead of a translucent box the world shows through."""
+        x, y, w, h = rect
+        shadow = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
+        for i, a in ((0, 26), (3, 20), (6, 12)):
+            pygame.draw.rect(shadow, (0, 0, 0, a), (i, i, w + 8 - i * 2, h + 8 - i * 2),
+                             border_radius=radius + 2 if radius else 0)
+        screen.blit(shadow, (x - 4, y - 4))
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
         if radius:
-            pygame.draw.rect(surf, fill, (0, 0, rect[2], rect[3]), border_radius=radius)
-            pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1, border_radius=radius)
+            pygame.draw.rect(surf, fill, (0, 0, w, h), border_radius=radius)
+            pygame.draw.rect(surf, border, (0, 0, w, h), 1, border_radius=radius)
+            pygame.draw.rect(surf, (255, 255, 255, 16), (1, 1, w - 2, h - 2), 1,
+                             border_radius=max(0, radius - 1))
         else:
             surf.fill(fill)
-            pygame.draw.rect(surf, border, (0, 0, rect[2], rect[3]), 1)
-        screen.blit(surf, (rect[0], rect[1]))
+            pygame.draw.rect(surf, border, (0, 0, w, h), 1)
+            pygame.draw.line(surf, (255, 255, 255, 18), (0, 0), (w, 0))
+        screen.blit(surf, (x, y))
 
     def draw_hud(self, screen) -> None:
         g, p, S = self.game, self.game.player, self.s
         st = g.stats()
         w = S(340)
         self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.font_big.render("Пиксельное приключение 2.2", True,
+        screen.blit(self.text(self.font_big, "Pixel patch 2.3", True,
                                          (250, 246, 226)), (S(20), S(14)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
             True, (186, 206, 236)), (S(20), S(38)))
         # hp
@@ -682,18 +965,18 @@ class Renderer:
         pygame.draw.rect(screen, (150, 40, 40), (S(20), S(58), S(210), S(11)))
         pygame.draw.rect(screen, (92, 214, 108),
                          (S(20), S(58), S(210) * max(0.0, p["hp"] / st["hp_max"]), S(11)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"{max(0, math.ceil(p['hp']))}/{int(st['hp_max'])}", True, (255, 255, 255)),
             (S(236), S(56)))
         # mana
         pygame.draw.rect(screen, (28, 28, 36), (S(20), S(73), S(210), S(9)))
         pygame.draw.rect(screen, (60, 120, 220),
                          (S(20), S(73), S(210) * max(0.0, p["mp"] / st["mp_max"]), S(9)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"{int(p['mp'])}/{int(st['mp_max'])} MP", True, (200, 220, 255)), (S(236), S(70)))
-        screen.blit(self.font_small.render(f"Золото: {p['gold']}", True, GOLD),
+        screen.blit(self.text(self.font_small, f"Золото: {p['gold']}", True, GOLD),
                     (S(20), S(88)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"Атака {int(st['atk'])}   Защита {int(st['def'])}   Крит {st['crit_chance']:.0f}%",
             True, (232, 200, 170)), (S(120), S(88)))
 
@@ -702,8 +985,7 @@ class Renderer:
         if show_minimap:
             mm_panel = (S(10), S(120), S(364), S(150))
             self.panel(screen, mm_panel, radius=S(6))
-            mm = pygame.transform.scale(self.minimap, (S(200), S(102)))
-            screen.blit(mm, (S(20), S(130)))
+            screen.blit(self.minimap_scaled, (S(20), S(130)))
             pygame.draw.rect(screen, UI_EDGE, (S(20), S(130), S(200), S(102)), 1)
             mx = S(20) + int(p["x"] / W.MAP_W * S(200))
             my = S(130) + int(p["y"] / W.MAP_H * S(102))
@@ -714,7 +996,7 @@ class Renderer:
         info_y = S(130) if show_minimap else S(120)
         if not show_minimap:
             self.panel(screen, (S(10), S(120), S(364), S(120)), radius=S(6))
-        screen.blit(self.font_big.render(region["name"] if region else "—", True,
+        screen.blit(self.text(self.font_big, region["name"] if region else "—", True,
                                          (232, 240, 252)), (info_x, info_y))
         info_y += S(26)
         lines = [f"Исследовано: {len(g.visited)}/{len(g.world.regions)}",
@@ -726,9 +1008,9 @@ class Renderer:
         if buffs:
             lines.append("Эффекты: " + buffs)
         for i, text in enumerate(lines):
-            screen.blit(self.font_small.render(text, True, (176, 194, 218)),
+            screen.blit(self.text(self.font_small, text, True, (176, 194, 218)),
                         (info_x, info_y + i * S(18)))
-        screen.blit(self.font_tiny.render("N — другая мелодия", True, (140, 152, 170)),
+        screen.blit(self.text(self.font_tiny, "N — другая мелодия", True, (140, 152, 170)),
                     (info_x, S(252)))
 
         # active quest tracker in its own panel under the minimap
@@ -739,28 +1021,32 @@ class Renderer:
         self.panel(screen, tr_panel, radius=S(6))
         ready = sum(1 for q in g.quests if q.get("ready"))
         head = "Задания" + (f"   •   готово к сдаче: {ready}" if ready else "")
-        screen.blit(self.font.render(head, True, (150, 240, 150) if ready else (236, 240, 248)),
+        screen.blit(self.text(self.font, head, True, (150, 240, 150) if ready else (236, 240, 248)),
                     (S(20), tr_y + S(6)))
         qy = tr_y + S(32)
         if not active:
-            screen.blit(self.font_small.render("нет заданий — поговори с жителями",
+            screen.blit(self.text(self.font_small, "нет заданий — поговори с жителями",
                                                True, (168, 180, 198)), (S(20), qy))
         for q in active:
             col = (150, 240, 150) if q.get("ready") else (222, 232, 246)
             mark = "★" if q.get("ready") else "•"
-            screen.blit(self.font_small.render(f"{mark} {q['title']}", True, col),
+            screen.blit(self.text(self.font_small, f"{mark} {q['title']}", True, col),
                         (S(20), qy))
-            screen.blit(self.font_small.render(f"{q['progress']}/{q['goal']}", True,
+            screen.blit(self.text(self.font_small, f"{q['progress']}/{q['goal']}", True,
                                                (170, 200, 236)),
                         (S(340) - self.font_small.size(f"{q['progress']}/{q['goal']}")[0], qy))
             qy += S(22)
 
         # hints (the bottom legend can be switched off in the settings)
         if g.settings.get("hints", True):
-            screen.blit(self.font_small.render(
-                "WASD — движение   ПРОБЕЛ — атака   1–9 — умения   E — говорить/собрать   "
-                "I — сумка   K — дуб навыков   Q — задания   H — зелье   F5/F9 — сохранить   F10 — меню",
-                True, (196, 210, 234)), (S(10), self.height - S(22)))
+            # the legend used to be bare text over the ground: now it sits on a card
+            legend = ("WASD — движение     ПРОБЕЛ — атака     1–9 — умения     E — говорить/собрать"
+                      "     I — сумка     K — дуб     Q — задания     H — зелье     F10 — меню")
+            txt = self.text(self.font_small, legend, True, (206, 218, 240))
+            pad = S(10)
+            lw, lh = txt.get_width() + pad * 2, txt.get_height() + S(8)
+            self.panel(screen, (S(10), self.height - lh - S(6), lw, lh), radius=S(5))
+            screen.blit(txt, (S(10) + pad, self.height - lh - S(6) + S(4)))
 
         # what is within reach right now
         hint = ""
@@ -782,7 +1068,7 @@ class Renderer:
             else:
                 hint = f"E — поговорить: {n['name']}"
         if hint and g.settings.get("hints", True):
-            txt = self.font.render(hint, True, (255, 244, 200))
+            txt = self.text(self.font, hint, True, (255, 244, 200))
             bx = self.width // 2 - txt.get_width() // 2
             by = self.height - S(150)
             bg = pygame.Surface((txt.get_width() + S(28), txt.get_height() + S(12)),
@@ -804,9 +1090,15 @@ class Renderer:
                              border_radius=S(6))
             pygame.draw.rect(screen, (250, 220, 130) if ready else (74, 82, 102), rect, 2,
                              border_radius=S(6))
-            key = self.font_small.render(str(i + 1), True,
-                                         (230, 236, 250) if ready else (128, 136, 154))
-            screen.blit(key, (x + S(5), hb_y + S(38)))
+            cap = pygame.Rect(x + S(4), hb_y + S(38), S(16), S(15))
+            pygame.draw.rect(screen, (34, 40, 56) if ready else (24, 28, 40), cap,
+                             border_radius=S(3))
+            pygame.draw.rect(screen, (250, 220, 130) if ready else (66, 74, 94), cap, 1,
+                             border_radius=S(3))
+            key = self.text(self.font_small, str(i + 1), True,
+                                         (240, 244, 255) if ready else (140, 148, 168))
+            screen.blit(key, (cap.centerx - key.get_width() // 2,
+                              cap.centery - key.get_height() // 2))
             if ready:
                 ab = G.ABILITIES[hotbar[i]]
                 icon = SP.item_icon_surface(SK._ABILITY_ICON.get(hotbar[i], "scroll"))
@@ -817,16 +1109,16 @@ class Renderer:
                     overlay = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
                     overlay.fill((10, 12, 20, 170))
                     screen.blit(overlay, (x, hb_y))
-                    txt = self.font_small.render(f"{cd:.1f}", True, (255, 240, 200))
+                    txt = self.text(self.font_small, f"{cd:.1f}", True, (255, 240, 200))
                     screen.blit(txt, (x + S(28) - txt.get_width() / 2, hb_y + S(20)))
                 if p["mp"] < ab["mana"]:
-                    screen.blit(self.font_small.render(str(ab["mana"]), True, (120, 160, 255)),
+                    screen.blit(self.text(self.font_small, str(ab["mana"]), True, (120, 160, 255)),
                                 (x + S(38), hb_y + S(38)))
             else:
                 # an empty slot should look empty, not like a missing texture
                 pygame.draw.circle(screen, (46, 52, 68), (x + S(28), hb_y + S(26)), S(4))
                 if i == 0:
-                    hint = self.font_tiny.render("активные умения — на дубе (K)", True,
+                    hint = self.text(self.font_tiny, "активные умения — на дубе (K)", True,
                                                  (146, 154, 172))
                     screen.blit(hint, (x + S(28) - hint.get_width() // 2, hb_y - S(34)))
 
@@ -839,7 +1131,7 @@ class Renderer:
             pygame.draw.rect(surf, (10, 12, 18, int(210 * a)), (0, 0, S(520), S(26)),
                              border_radius=S(4))
             screen.blit(surf, (S(10), ty))
-            txt = self.font_small.render(t["text"], True, pygame.Color(t["color"]))
+            txt = self.text(self.font_small, t["text"], True, pygame.Color(t["color"]))
             txt.set_alpha(int(255 * a))
             screen.blit(txt, (S(20), ty + S(7)))
             ty -= S(30)
@@ -857,8 +1149,8 @@ class Renderer:
         y = (self.height - h) // 2
         self.panel(screen, (x, y, w, h), fill=(12, 15, 24, 246), border=(150, 172, 210),
                    radius=S(8))
-        screen.blit(self.font_big.render("Сумка", True, (250, 240, 210)), (x + pad, y + pad))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_big, "Сумка", True, (250, 240, 210)), (x + pad, y + pad))
+        screen.blit(self.text(self.font_small, 
             f"{len(g.player['inventory'])}/{G.INV_SLOTS} слотов   •   стрелки — выбор   •   "
             "E / Enter — использовать или надеть   •   ПРОБЕЛ — выбросить   •   I — закрыть",
             True, (186, 202, 226)), (x + pad + S(110), y + pad + S(10)))
@@ -886,7 +1178,7 @@ class Renderer:
                 screen.blit(pygame.transform.scale(icon, (S(52), S(52))),
                             (cx + (cell - S(52)) / 2, cy + S(8)))
                 if slot["count"] > 1:
-                    cnt = self.font_small.render(str(slot["count"]), True, (255, 255, 255))
+                    cnt = self.text(self.font_small, str(slot["count"]), True, (255, 255, 255))
                     bw, bh = cnt.get_width() + S(10), cnt.get_height() + S(4)
                     badge = pygame.Surface((bw, bh), pygame.SRCALPHA)
                     pygame.draw.rect(badge, (12, 14, 22, 220), (0, 0, bw, bh),
@@ -912,9 +1204,9 @@ class Renderer:
             data = IT.ITEMS[item_id]
             icon = SP.item_icon_surface(data["icon"])
             screen.blit(pygame.transform.scale(icon, (S(40), S(40))), (px + S(10), py + S(10)))
-            screen.blit(self.font.render(data["name"], True, (252, 244, 216)),
+            screen.blit(self.text(self.font, data["name"], True, (252, 244, 216)),
                         (px + S(58), py + S(12)))
-            screen.blit(self.font_small.render(data["desc"], True, (182, 198, 222)),
+            screen.blit(self.text(self.font_small, data["desc"], True, (182, 198, 222)),
                         (px + S(58), py + S(36)))
             stats = []
             if data.get("atk"):
@@ -931,29 +1223,29 @@ class Renderer:
                 stats.append(f"Крит +{data['crit']}%")
             stats.append(f"Цена {data['value']}   продажа {IT.sell_price(item_id)}")
             for i, line in enumerate(stats):
-                screen.blit(self.font_small.render(line, True, (232, 214, 160)),
+                screen.blit(self.text(self.font_small, line, True, (232, 214, 160)),
                             (px + S(12), py + S(62 + i * 18)))
             hint = {"consumable": "E — использовать", "weapon": "E — взять в руку",
                     "armor": "E — надеть", "ring": "E — надеть кольцо"}.get(
                         data["kind"], "Материал: продай торговцу")
-            screen.blit(self.font_small.render(hint, True, (140, 200, 255)),
+            screen.blit(self.text(self.font_small, hint, True, (140, 200, 255)),
                         (px + S(12), py + S(168)))
         else:
-            screen.blit(self.font_small.render("Пустой слот", True, (140, 152, 176)),
+            screen.blit(self.text(self.font_small, "Пустой слот", True, (140, 152, 176)),
                         (px + S(12), py + S(10)))
 
         eq_y = py + S(208)
         self.panel(screen, (px, eq_y, S(286), S(140)), fill=(16, 20, 30, 236),
                    border=(90, 108, 142), radius=S(6))
-        screen.blit(self.font.render("Экипировка", True, (252, 244, 216)), (px + S(12), eq_y + S(8)))
+        screen.blit(self.text(self.font, "Экипировка", True, (252, 244, 216)), (px + S(12), eq_y + S(8)))
         for i, (key, label) in enumerate((("weapon", "Оружие"), ("armor", "Броня"),
                                           ("ring", "Кольцо"), ("amulet", "Амулет"))):
             item_id = g.player["equip"].get(key)
             name = IT.item_name(item_id) if item_id else "—"
-            screen.blit(self.font_small.render(f"{label}: {name}", True, (206, 220, 240)),
+            screen.blit(self.text(self.font_small, f"{label}: {name}", True, (206, 220, 240)),
                         (px + S(12), eq_y + S(32 + i * 20)))
         st = g.stats()
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"Итого: атака {int(st['atk'])}, защита {int(st['def'])}, HP {int(st['hp_max'])}, "
             f"MP {int(st['mp_max'])}", True, (240, 210, 140)), (px + S(12), eq_y + S(116)))
 
@@ -965,9 +1257,9 @@ class Renderer:
         y = (self.height - h) // 2
         self.panel(screen, (x, y, w, h), fill=(14, 17, 26, 248), border=(200, 176, 120),
                    radius=S(8))
-        screen.blit(self.font_big.render("Торговец", True, (252, 240, 200)),
+        screen.blit(self.text(self.font_big, "Торговец", True, (252, 240, 200)),
                     (x + S(18), y + S(14)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"Золото: {g.player['gold']}   •   TAB — продать/купить   •   стрелки — выбор   •   "
             "E / Enter — сделка   •   R — продать все материалы   •   ESC — выйти",
             True, (196, 212, 236)), (x + S(18), y + S(44)))
@@ -976,7 +1268,7 @@ class Renderer:
             active = g.shop_tab == tab
             pygame.draw.rect(screen, (44, 36, 20) if active else (22, 26, 38), rect)
             pygame.draw.rect(screen, (248, 226, 152) if active else (90, 100, 124), rect, 2)
-            screen.blit(self.font.render(label, True,
+            screen.blit(self.text(self.font, label, True,
                                          (255, 236, 158) if active else (206, 216, 232)),
                         (rect[0] + S(24), rect[1] + S(6)))
 
@@ -997,28 +1289,28 @@ class Renderer:
             data = IT.ITEMS[item_id]
             icon = SP.item_icon_surface(data["icon"])
             screen.blit(pygame.transform.scale(icon, (S(24), S(24))), (rect[0] + S(6), rect[1] + S(3)))
-            screen.blit(self.font_small.render(data["name"], True,
+            screen.blit(self.text(self.font_small, data["name"], True,
                                                (255, 236, 158) if sel else (216, 226, 240)),
                         (rect[0] + S(38), rect[1] + S(7)))
-            screen.blit(self.font_small.render(f"x{count}", True, (170, 190, 216)),
+            screen.blit(self.text(self.font_small, f"x{count}", True, (170, 190, 216)),
                         (rect[0] + S(360), rect[1] + S(7)))
             price_col = (240, 210, 120) if (g.shop_tab == "sell" or
                                             g.player["gold"] >= price) else (220, 120, 120)
-            screen.blit(self.font_small.render(
+            screen.blit(self.text(self.font_small, 
                 ("+" if g.shop_tab == "sell" else "−") + f"{price} золота", True, price_col),
                 (rect[0] + S(470), rect[1] + S(7)))
-            screen.blit(self.font_small.render(data["desc"][:52], True, (166, 182, 206)),
+            screen.blit(self.text(self.font_small, data["desc"][:52], True, (166, 182, 206)),
                         (rect[0] + S(620), rect[1] + S(7)))
         if not lines:
-            screen.blit(self.font.render(
+            screen.blit(self.text(self.font, 
                 "Нечего продавать — принеси трофеи с монстров" if g.shop_tab == "sell"
                 else "Товар закончился", True, (200, 180, 160)),
                 (x + S(24), list_y + S(20)))
         elif len(lines) > 12:
-            screen.blit(self.font_small.render(f"… и ещё {len(lines) - 12} позиций",
+            screen.blit(self.text(self.font_small, f"… и ещё {len(lines) - 12} позиций",
                                                True, (170, 186, 210)),
                         (x + S(24), list_y + S(12 * 34) + S(4)))
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             "Торговец платит 45% цены и берёт 160% за свой товар.", True, (176, 192, 216)),
             (x + S(18), y + h - S(28)))
 
@@ -1032,34 +1324,34 @@ class Renderer:
         w = S(880)
         self.panel(screen, (x, y, w, h), fill=(12, 15, 24, 244), border=(140, 170, 220),
                    radius=S(8))
-        screen.blit(self.font_big.render("Журнал заданий", True, (255, 255, 255)),
+        screen.blit(self.text(self.font_big, "Журнал заданий", True, (255, 255, 255)),
                     (x + S(18), y + S(14)))
         done = len(g.quest_done)
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"выполнено {done} из {len(QST.QUESTS)}   •   взято {len(active)}",
             True, (196, 210, 232)), (x + S(240), y + S(24)))
-        screen.blit(self.font_small.render("Q — закрыть   •   брать задания у жителей (E)",
+        screen.blit(self.text(self.font_small, "Q — закрыть   •   брать задания у жителей (E)",
                                            True, (170, 186, 210)),
                     (x + w - S(330), y + S(24)))
         yy = y + S(60)
         if not active:
-            screen.blit(self.font.render(
+            screen.blit(self.text(self.font, 
                 "Пока заданий нет. Поговори с жителями деревни: у каждого есть дела.",
                 True, (206, 216, 234)), (x + S(20), yy + S(10)))
         for q in active[:9]:
             ready = q.get("ready")
             col = (150, 240, 150) if ready else (232, 232, 242)
             mark = "★" if ready else "•"
-            screen.blit(self.font.render(f"{mark} {q['title']}", True, col),
+            screen.blit(self.text(self.font, f"{mark} {q['title']}", True, col),
                         (x + S(18), yy))
-            screen.blit(self.font_small.render(q["desc"], True, (176, 192, 216)),
+            screen.blit(self.text(self.font_small, q["desc"], True, (176, 192, 216)),
                         (x + S(32), yy + S(24)))
             giver = next((k for k, ids in QST.GIVERS.items() if q["id"] in ids), "")
             who = G.GIVER_NAMES.get(giver, "").rstrip("у") if giver else ""
             reward = f"+{q['xp']} опыта, +{q['gold']} золота"
             if q.get("reward") and IT.ITEMS.get(q["reward"]):
                 reward += ", " + IT.ITEMS[q["reward"]]["name"]
-            screen.blit(self.font_tiny.render(f"Награда: {reward}" +
+            screen.blit(self.text(self.font_tiny, f"Награда: {reward}" +
                                               (f"   •   заказчик: {who}" if who else ""),
                                               True, (150, 200, 160)),
                         (x + S(32), yy + S(40)))
@@ -1070,16 +1362,16 @@ class Renderer:
                 pygame.draw.rect(screen, (120, 200, 130) if ready else (96, 150, 210),
                                  (bar.x, bar.y, max(2, int(bar.width * frac)), bar.height))
             pygame.draw.rect(screen, (66, 72, 88), bar, 1)
-            screen.blit(self.font_small.render(f"{q['progress']}/{q['goal']}", True,
+            screen.blit(self.text(self.font_small, f"{q['progress']}/{q['goal']}", True,
                                                (206, 226, 246)),
                         (bar.x + bar.width + S(10), yy + S(8)))
             if ready:
-                screen.blit(self.font_tiny.render("готово — сдай заказчику", True,
+                screen.blit(self.text(self.font_tiny, "готово — сдай заказчику", True,
                                                   (150, 240, 150)),
                             (bar.x, yy + S(28)))
             yy += S(56)
         if len(active) > 9:
-            screen.blit(self.font_small.render(f"… и ещё {len(active) - 9} заданий",
+            screen.blit(self.text(self.font_small, f"… и ещё {len(active) - 9} заданий",
                                                True, (170, 186, 210)), (x + S(20), yy))
 
     # --------------------------------------------------------- the oak screen
@@ -1114,7 +1406,22 @@ class Renderer:
 
         clip = screen.get_clip()
         screen.set_clip(pygame.Rect(area_x + 2, area_y + 2, area_w - 4, area_h - 4))
-        draw_oak(screen, to_screen, unit)
+        # The oak is expensive to draw (thousands of leaves), so it is rendered once
+        # into a bitmap and re-scaled only when the zoom changes: panning is one blit.
+        oak = self._oak_bitmap(unit)
+        screen.blit(oak, (int(cx0 - cam[0] * unit), int(cy0 - cam[1] * unit)))
+        # dim it behind the nodes so the tree never fights the UI for attention
+        if self._shade_key != (area_w, area_h):
+            self._shade_key = (area_w, area_h)
+            shade = pygame.Surface((area_w, area_h), pygame.SRCALPHA)
+            shade.fill((7, 10, 16, 84))
+            for i in range(7):                  # vignette towards the edges
+                inset = i * 16
+                pygame.draw.rect(shade, (6, 9, 14, 22),
+                                 (inset, inset // 2, area_w - inset * 2, area_h - inset),
+                                 16, border_radius=18)
+            self._shade = shade
+        screen.blit(self._shade, (area_x, area_y))
 
         # ---- requirement links ----
         for skill in SK.SKILLS:
@@ -1170,6 +1477,9 @@ class Renderer:
                 pygame.draw.circle(glow, (*col, int(30 + 40 * pulse)),
                                    (radius * 2, radius * 2), int(radius * 1.7))
                 screen.blit(glow, (cx - radius * 2, cy - radius * 2))
+            # dark plate under every node: without it the icons vanish into the canopy
+            pygame.draw.circle(screen, (9, 12, 19), (cx + S(1), cy + S(2)), radius + S(4))
+            pygame.draw.circle(screen, (20, 25, 35), (cx, cy), radius + S(3))
             pygame.draw.circle(screen, (32, 38, 50), (cx, cy), radius)
             if done:
                 pygame.draw.circle(screen, (30, 46, 30), (cx, cy), max(1, radius - S(3)))
@@ -1186,16 +1496,19 @@ class Renderer:
             icon_px = max(S(12), int(radius * 2.1))
             icon = SP.item_icon_surface(skill["icon"])
             icon = pygame.transform.scale(icon, (icon_px, icon_px))
-            if not (done or avail):
+            if not (done or avail):        # locked icons stay visible but recede
                 icon = icon.copy()
-                icon.fill((156, 156, 172, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                icon.fill((150, 150, 168, 255), special_flags=pygame.BLEND_RGBA_MULT)
             screen.blit(icon, (cx - icon_px // 2, cy - icon_px // 2))
             if skill["kind"] == "active":        # active skills get a corner pip
                 pip = max(S(3), radius // 4)
                 pygame.draw.circle(screen, (120, 200, 255), (cx + radius - pip, cy - radius + pip),
                                    pip)
-            if show_labels and (near_cursor or rect.collidepoint(mouse)):
-                name = self.font_tiny.render(skill["name"], True,
+            # learned and learnable nodes always carry a name; locked ones only near
+            # the cursor, so the overview stays quiet instead of turning into a word cloud
+            label_it = (show_labels and (done or avail)) or near_cursor or rect.collidepoint(mouse)
+            if label_it:
+                name = self.text(self.font_tiny, skill["name"], True,
                                              (238, 242, 252) if (done or avail) else (168, 174, 188))
                 bg = pygame.Surface((name.get_width() + S(8), name.get_height() + S(4)),
                                     pygame.SRCALPHA)
@@ -1234,8 +1547,8 @@ class Renderer:
                 continue
             done = sum(1 for s in SK.branch_skills(branch["id"]) if s["id"] in learned)
             total = len(SK.branch_skills(branch["id"]))
-            label = self.font_big.render(branch["name"], True, tuple(branch["color"]))
-            sub = self.font_tiny.render(f"{done}/{total}", True, (216, 222, 236))
+            label = self.text(self.font_big, branch["name"], True, tuple(branch["color"]))
+            sub = self.text(self.font_tiny, f"{done}/{total}", True, (216, 222, 236))
             off = S(52) if by_ < area_y + area_h - S(40) else -S(30)
             ly = by_ - off
             ly = max(area_y + S(6), min(area_y + area_h - label.get_height() - sub.get_height() - S(6), ly))
@@ -1262,22 +1575,22 @@ class Renderer:
             pygame.draw.circle(screen, col, (lx + S(7), legend_y + S(5)), S(6), S(2))
             if pip:
                 pygame.draw.circle(screen, (120, 200, 255), (lx + S(11), legend_y + S(1)), S(2))
-            label = self.font_tiny.render(text, True, (176, 184, 200))
+            label = self.text(self.font_tiny, text, True, (176, 184, 200))
             screen.blit(label, (lx + S(17), legend_y))
             lx += S(17) + label.get_width() + S(22)
 
         # ---- top bar ----
-        title = self.font_title.render("Дуб навыков", True, (255, 238, 176))
+        title = self.text(self.font_title, "Дуб навыков", True, (255, 238, 176))
         screen.blit(title, (area_x, S(8)))
         bar_x = area_x + title.get_width() + S(28)
-        pts = self.font.render(f"Очки навыков: {g.skill_points}", True,
+        pts = self.text(self.font, f"Очки навыков: {g.skill_points}", True,
                                (255, 230, 140) if g.skill_points else (150, 152, 164))
         screen.blit(pts, (bar_x, S(14)))
         hint = ("колесо мыши / + − — приблизить   •   F — весь дуб   •   "
                 "стрелки / мышь — выбор   •   Enter — изучить   •   K — закрыть")
         hint_x = bar_x + pts.get_width() + S(28)
         if hint_x + self.font_small.size(hint)[0] < self.width - S(16):
-            screen.blit(self.font_small.render(hint, True, (168, 182, 206)), (hint_x, S(18)))
+            screen.blit(self.text(self.font_small, hint, True, (168, 182, 206)), (hint_x, S(18)))
 
         # ---- side panel ----
         panel_x = self.width - S(348) + S(10)
@@ -1290,17 +1603,17 @@ class Renderer:
         branch_col = tuple(branch["color"]) if branch else (226, 214, 160)
         x = panel_x + S(16)
         y = S(64)
-        screen.blit(self.font_big.render(focus["name"], True, (255, 240, 200)), (x, y))
+        screen.blit(self.text(self.font_big, focus["name"], True, (255, 240, 200)), (x, y))
         y += S(30)
         pygame.draw.line(screen, (60, 66, 84), (x, y), (x + panel_w - S(32), y))
         y += S(10)
         for text, col in ((f"Ветвь: {branch_name}", branch_col),
                           (f"Ярус {focus['tier']}   •   " + ("активное умение" if focus["kind"] == "active" else "пассивное умение"),
                            (150, 200, 255) if focus["kind"] == "active" else (186, 196, 214))):
-            screen.blit(self.font_small.render(text, True, col), (x, y))
+            screen.blit(self.text(self.font_small, text, True, col), (x, y))
             y += S(20)
         for line in _wrap(focus["desc"], 40):
-            screen.blit(self.font_small.render(line, True, (208, 220, 238)), (x, y))
+            screen.blit(self.text(self.font_small, line, True, (208, 220, 238)), (x, y))
             y += S(19)
         y += S(4)
         state = ("Изучено" if focus["id"] in learned
@@ -1309,23 +1622,23 @@ class Renderer:
                  else "Заперто — сначала предыдущее умение")
         state_col = ((150, 240, 150) if focus["id"] in learned
                      else (255, 230, 150) if g.can_learn(focus["id"]) else (206, 168, 168))
-        screen.blit(self.font.render(state, True, state_col), (x, y))
+        screen.blit(self.text(self.font, state, True, state_col), (x, y))
         y += S(26)
         if focus["req"]:
             reqs = ", ".join(SK.by_id(r)["name"] for r in focus["req"] if SK.by_id(r))
             for line in _wrap("Требует: " + reqs, 42):
-                screen.blit(self.font_small.render(line, True, (190, 200, 216)), (x, y))
+                screen.blit(self.text(self.font_small, line, True, (190, 200, 216)), (x, y))
                 y += S(18)
         y += S(8)
         pygame.draw.line(screen, (60, 66, 84), (x, y), (x + panel_w - S(32), y))
         y += S(12)
-        screen.blit(self.font.render("Ветви", True, (240, 232, 200)), (x, y))
+        screen.blit(self.text(self.font, "Ветви", True, (240, 232, 200)), (x, y))
         y += S(24)
         for b in SK.BRANCHES:
             nodes = SK.branch_skills(b["id"])
             done = sum(1 for n in nodes if n["id"] in learned)
             here = focus["branch"] == b["id"]
-            screen.blit(self.font_small.render(
+            screen.blit(self.text(self.font_small, 
                 f"{b['name']}: {done}/{len(nodes)}", True,
                 tuple(b["color"]) if here else (176, 182, 196)), (x, y))
             bar_x, bar_w = x + S(112), panel_w - S(150)
@@ -1338,7 +1651,7 @@ class Renderer:
         y += S(10)
         pygame.draw.line(screen, (60, 66, 84), (x, y), (x + panel_w - S(32), y))
         y += S(12)
-        screen.blit(self.font.render("Активные умения", True, (240, 232, 200)), (x, y))
+        screen.blit(self.text(self.font, "Активные умения", True, (240, 232, 200)), (x, y))
         y += S(22)
         for i in range(G.HOTBAR_KEYS):
             key = g.player["hotbar"][i] if i < len(g.player["hotbar"]) else None
@@ -1350,7 +1663,7 @@ class Renderer:
                 icon = SP.item_icon_surface(SK._ABILITY_ICON.get(key, "scroll"))
                 screen.blit(pygame.transform.scale(icon, (S(22), S(22))),
                             (slot.x + S(4), slot.y + S(4)))
-            num = self.font_tiny.render(str(i + 1), True, (168, 176, 194))
+            num = self.text(self.font_tiny, str(i + 1), True, (168, 176, 194))
             screen.blit(num, (slot.x + S(2), slot.y + slot.height - S(11)))
         y += S(38)
         for i in range(G.HOTBAR_KEYS):
@@ -1358,10 +1671,10 @@ class Renderer:
             if not key:
                 continue
             ab = G.ABILITIES[key]
-            screen.blit(self.font_tiny.render(
+            screen.blit(self.text(self.font_tiny, 
                 f"{i + 1}. {ab['name']} — мана {ab['mana']}", True, (188, 206, 232)), (x, y))
             y += S(15)
-        screen.blit(self.font_small.render(
+        screen.blit(self.text(self.font_small, 
             f"Изучено: {len(learned)}/{len(SK.SKILLS)}", True, (230, 220, 180)),
             (x, self.height - S(62)))
 
@@ -1380,16 +1693,16 @@ class Renderer:
         x, y = (self.width - w) / 2, self.height - h - S(96)
         self.panel(screen, (int(x), int(y), w, h), fill=(10, 13, 22, 246),
                    border=(226, 202, 132), radius=S(8))
-        screen.blit(self.font_big.render(d["name"], True, (255, 226, 140)),
+        screen.blit(self.text(self.font_big, d["name"], True, (255, 226, 140)),
                     (x + S(20), y + S(12)))
-        screen.blit(self.font.render(d["line"], True, (240, 242, 250)),
+        screen.blit(self.text(self.font, d["line"], True, (240, 242, 250)),
                     (x + S(20), y + S(46)))
         yy = y + S(78)
         for i, q in enumerate(turns):
             bar = pygame.Rect(int(x + S(14)), int(yy - S(3)), w - S(28), S(24))
             pygame.draw.rect(screen, (26, 44, 26), bar)
             pygame.draw.rect(screen, (150, 220, 140), bar, 1)
-            screen.blit(self.font_small.render(
+            screen.blit(self.text(self.font_small, 
                 f"Готово: {q['title']} — Enter, чтобы сдать", True, (196, 244, 186)),
                 (bar.x + S(8), bar.y + S(4)))
             yy += S(26)
@@ -1397,16 +1710,16 @@ class Renderer:
             bar = pygame.Rect(int(x + S(14)), int(yy - S(3)), w - S(28), S(28))
             pygame.draw.rect(screen, (24, 30, 44), bar)
             pygame.draw.rect(screen, (226, 202, 132), bar, 1)
-            screen.blit(self.font_small.render(
+            screen.blit(self.text(self.font_small, 
                 f"{i + 1} — взять: {q['title']}", True, (255, 236, 158)),
                 (bar.x + S(8), bar.y + S(3)))
-            screen.blit(self.font_tiny.render(q["desc"], True, (196, 208, 228)),
+            screen.blit(self.text(self.font_tiny, q["desc"], True, (196, 208, 228)),
                         (bar.x + S(8), bar.y + S(17)))
             yy += S(30)
         hint = "E — закрыть" + ("   •   TAB — торговля" if d.get("shop") else "")
         if offers or turns:
             hint = "1-3 — взять задание   •   Enter — сдать   •   " + hint
-        txt = self.font_small.render(hint, True, (162, 178, 202))
+        txt = self.text(self.font_small, hint, True, (162, 178, 202))
         screen.blit(txt, (x + w - txt.get_width() - S(16), y + h - S(24)))
 
     # ------------------------------------------------------------- settings
@@ -1425,9 +1738,9 @@ class Renderer:
         y = (self.height - h) // 2
         self.panel(screen, (x, y, w, h), fill=(14, 18, 28, 250), border=(150, 170, 210),
                    radius=S(10))
-        screen.blit(self.font_title.render("Настройки", True, (252, 244, 220)),
+        screen.blit(self.text(self.font_title, "Настройки", True, (252, 244, 220)),
                     (x + S(24), y + S(14)))
-        screen.blit(self.font_small.render("TAB — вкладка   •   ↑ ↓ — строка   •   "
+        screen.blit(self.text(self.font_small, "TAB — вкладка   •   ↑ ↓ — строка   •   "
                                            "← → — значение   •   Enter — выбрать   •   "
                                            "ESC — назад",
                                            True, (162, 178, 202)),
@@ -1444,7 +1757,7 @@ class Renderer:
                              border_radius=S(6))
             pygame.draw.rect(screen, (250, 220, 140) if active else (62, 70, 88), rect, 2,
                              border_radius=S(6))
-            txt = self.font.render(label, True,
+            txt = self.text(self.font, label, True,
                                    (255, 240, 190) if active else (176, 188, 206))
             screen.blit(txt, (rect.x + (tw - txt.get_width()) // 2, rect.y + S(6)))
             tx += tw + S(10)
@@ -1462,7 +1775,7 @@ class Renderer:
                 pygame.draw.rect(screen, (30, 38, 54), rect, border_radius=S(6))
                 pygame.draw.rect(screen, (240, 206, 130), rect, 2, border_radius=S(6))
             text_y = rect.y + (rect.height - self.font.get_height()) // 2
-            screen.blit(self.font.render(label, True,
+            screen.blit(self.text(self.font, label, True,
                                          (248, 250, 255) if sel else (206, 216, 232)),
                         (rect.x + S(14), text_y))
             # value on the right: a slider for volumes, a pill for everything else
@@ -1475,16 +1788,16 @@ class Renderer:
                                      (bar.x, bar.y, max(3, int(bar.width * frac)), bar.height),
                                      border_radius=S(6))
                 pygame.draw.rect(screen, (74, 84, 104), bar, 1, border_radius=S(6))
-                vt = self.font.render(value, True, (236, 240, 250))
+                vt = self.text(self.font, value, True, (236, 240, 250))
                 screen.blit(vt, (bar.right + S(12), text_y))
             else:
-                vt = self.font.render(value, True,
+                vt = self.text(self.font, value, True,
                                       (255, 236, 150) if sel else (216, 226, 242))
                 vx = rect.right - vt.get_width() - S(16)
                 if sel and not capturing:
-                    screen.blit(self.font.render("‹", True, (240, 206, 130)),
+                    screen.blit(self.text(self.font, "‹", True, (240, 206, 130)),
                                 (vx - S(18), text_y))
-                    screen.blit(self.font.render("›", True, (240, 206, 130)),
+                    screen.blit(self.text(self.font, "›", True, (240, 206, 130)),
                                 (rect.right - S(14), text_y))
                 screen.blit(vt, (vx, text_y))
         # key capture: the action name stays readable, only the value slot changes
@@ -1494,11 +1807,11 @@ class Renderer:
             pygame.draw.rect(screen, (250, 220, 140), rect, 2, border_radius=S(6))
             pulse = 0.5 + 0.5 * math.sin(self.t * 5)
             col = (int(210 + 45 * pulse), int(200 + 40 * pulse), 150)
-            txt = self.font.render("нажми клавишу…  (ESC — отмена)", True, col)
+            txt = self.text(self.font, "нажми клавишу…  (ESC — отмена)", True, col)
             screen.blit(txt, (rect.right - txt.get_width() - S(16),
                               rect.y + (rect.height - txt.get_height()) // 2))
         if note:
-            screen.blit(self.font_small.render(note, True, (150, 230, 160)),
+            screen.blit(self.text(self.font_small, note, True, (150, 230, 160)),
                         (x + S(24), y + h - S(30)))
 
     # ------------------------------------------------------------------ menus
@@ -1560,8 +1873,8 @@ class Renderer:
                              (min(cx, cx + dx * tick), min(cy, cy + dy * tick), tick, 3))
             pygame.draw.rect(screen, (246, 224, 156),
                              (min(cx, cx + dx * 3), min(cy, cy + dy * tick), 3, tick))
-        title_s = self.font_title.render(title, True, (255, 238, 176))
-        title_sh = self.font_title.render(title, True, (24, 16, 6))
+        title_s = self.text(self.font_title, title, True, (255, 238, 176))
+        title_sh = self.text(self.font_title, title, True, (24, 16, 6))
         tx = self.width / 2 - title_s.get_width() / 2
         ty = py + S(26)
         screen.blit(title_sh, (tx + 3, ty + 3))
@@ -1569,7 +1882,7 @@ class Renderer:
         pygame.draw.rect(screen, (150, 128, 78),
                          (px + S(60), ty + title_s.get_height() + S(10), panel_w - S(120), 1))
         if subtitle:
-            sub = self.font.render(subtitle, True, (214, 226, 246))
+            sub = self.text(self.font, subtitle, True, (214, 226, 246))
             screen.blit(sub, (self.width / 2 - sub.get_width() / 2,
                               ty + title_s.get_height() + S(18)))
         mouse = pygame.mouse.get_pos()
@@ -1584,7 +1897,7 @@ class Renderer:
                 pygame.draw.rect(screen, (248, 226, 152), rect, 2)
             col = ((255, 236, 158) if (cur and enabled)
                    else (204, 214, 232) if enabled else (104, 112, 128))
-            txt = self.font_big.render(label, True, col)
+            txt = self.text(self.font_big, label, True, col)
             screen.blit(txt, (self.width / 2 - txt.get_width() / 2,
                               rect[1] + (rect[3] - txt.get_height()) / 2))
             if cur and enabled and math.sin(self.t * 6) > -0.35:
@@ -1597,9 +1910,9 @@ class Renderer:
         pygame.draw.rect(screen, (150, 128, 78),
                          (px + S(60), footer_y - S(10), panel_w - S(120), 1))
         if note:
-            n = self.font_small.render(note, True, (186, 204, 228))
+            n = self.text(self.font_small, note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.font_small.render("Пиксельное приключение — версия 2.2", True,
+        ver = self.text(self.font_small, "Pixel patch — версия 2.3", True,
                                      (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
@@ -1727,7 +2040,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel RPG Adventure 2.2")
+    pygame.display.set_caption("Pixel patch 2.3")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:
@@ -2006,7 +2319,7 @@ def run() -> int:
                 game.update(dt, {"up": False, "down": False, "left": False, "right": False})
             renderer.draw(screen)
         elif state == "title":
-            renderer.draw_menu(screen, "Пиксельное приключение",
+            renderer.draw_menu(screen, "Pixel patch",
                                "Большой мир • 19 существ • 121 навык • торговля",
                                entries, selected,
                                note=note or "Стрелки / W S — выбор     Enter — подтвердить     "

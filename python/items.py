@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Items, loot tables, prices and shop stock for Pixel RPG.
+"""Items, loot tables, prices and shop stock for Pixel patch.
 
 Item fields
     name    Russian display name

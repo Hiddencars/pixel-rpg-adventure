@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Procedural sound effects for Pixel RPG Adventure (stdlib + pygame only).
+"""Procedural sound effects for Pixel patch (stdlib + pygame only).
 
 Effects are synthesised at runtime as ``list[float]`` buffers in [-1, 1] at
 ``SAMPLE_RATE``, converted to 16-bit signed PCM and wrapped with
