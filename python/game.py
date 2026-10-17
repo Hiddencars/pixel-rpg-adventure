@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.4 — Python / pygame-ce.
+"""Pixel patch 2.5 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -91,6 +91,7 @@ DEFAULT_SETTINGS: dict = {
     "minimap": True,
     "hints": True,
     "autosave": True,
+    "atmosphere": True,          # свет и время суток
 }
 DIFFICULTY_NAMES = ("Лёгкая", "Обычная", "Суровая")
 DIFFICULTY_DAMAGE = (0.65, 1.0, 1.5)     # incoming damage multiplier
@@ -364,6 +365,8 @@ class Game:
             rows.append(("minimap", "Миникарта", "да" if st["minimap"] else "нет"))
             rows.append(("hints", "Подсказки на экране", "да" if st["hints"] else "нет"))
             rows.append(("autosave", "Автосохранение", "да" if st["autosave"] else "нет"))
+            rows.append(("atmosphere", "Свет и время суток",
+                         "да" if st["atmosphere"] else "нет"))
         return rows
 
     def change_setting(self, action: str, step: int = 1) -> str:
