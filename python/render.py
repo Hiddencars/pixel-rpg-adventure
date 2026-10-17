@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.3.
+"""Rendering, UI screens and the main loop for Pixel patch 2.4.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -92,263 +92,221 @@ def _branch_directions() -> dict[str, tuple[float, float, float]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# The oak: a gnarled, leafless world tree that doubles as the skill map.
+# Reference layout: trunk in the middle, a wide fractal canopy of bare branches,
+# roots below; the skill nodes read as the leaves. Colours stay warm and alive
+# (the game is a sunny adventure, not a grimdark one), and each main limb is
+# tinted with its branch colour so the five branches are readable at a glance.
+# ---------------------------------------------------------------------------
+BARK_D = (58, 40, 26)
+BARK = (92, 65, 42)
+BARK_M = (124, 90, 58)
+BARK_L = (158, 118, 78)
+BARK_EDGE = (38, 26, 18)
+
+
+def _mix(a, b, t: float):
+    return (int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t))
+
+
+# ---------------------------------------------------------------------------
+# The oak: a gnarled, leafless world tree that doubles as the skill map.
+# Reference layout: trunk in the middle, a wide fractal canopy of bare branches,
+# roots below; the skill nodes read as the leaves. Colours stay warm and alive
+# (the game is a sunny adventure, not a grimdark one), and each main limb is
+# tinted with its branch colour so the five branches are readable at a glance.
+# ---------------------------------------------------------------------------
+BARK_D = (58, 40, 26)
+BARK = (92, 65, 42)
+BARK_M = (124, 90, 58)
+BARK_L = (158, 118, 78)
+BARK_EDGE = (38, 26, 18)
+
+
+def _mix(a, b, t: float):
+    return (int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t))
+
+
 def _oak_bezier(p0, p1, p2, t):
-    """Quadratic bezier point."""
     u = 1.0 - t
     return (u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0],
             u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1])
 
 
-def _oak_limb(screen, P, unit_px, p0, ang, length, width, depth, rng,
-              tips, twigs):
-    """One curved, tapered limb plus its children; collects foliage anchors."""
+def _oak_shape(screen, P, pts, widths, tint: float = 0.0, tint_col=None):
+    """Draw a limb as ONE tapered polygon (plus a lit strip and a shaded underside).
+
+    Drawing it segment by segment left visible seams and a mismatch at the trunk,
+    which read as two sprites glued together; a single silhouette has no seams.
+    """
+    n = len(pts)
+    normals = []
+    for i in range(n):
+        a = pts[max(0, i - 1)]
+        b = pts[min(n - 1, i + 1)]
+        nx, ny = -(b[1] - a[1]), (b[0] - a[0])
+        ln = math.hypot(nx, ny) or 1.0
+        normals.append((nx / ln, ny / ln))
+    left = [P((pts[i][0] + normals[i][0] * widths[i],
+               pts[i][1] + normals[i][1] * widths[i])) for i in range(n)]
+    right = [P((pts[i][0] - normals[i][0] * widths[i],
+                pts[i][1] - normals[i][1] * widths[i])) for i in range(n)]
+    pygame.draw.polygon(screen, BARK, left + right[::-1])
+    # shaded underside (right/lower side)
+    pygame.draw.polygon(screen, BARK_D, [
+        P((pts[i][0] - normals[i][0] * widths[i],
+           pts[i][1] - normals[i][1] * widths[i])) for i in range(n)]
+        + [P((pts[i][0] - normals[i][0] * widths[i] * 0.30,
+              pts[i][1] - normals[i][1] * widths[i] * 0.30)) for i in reversed(range(n))])
+    # lit edge on the upper-left
+    lit = _mix(BARK_M, tint_col, tint) if tint_col else BARK_M
+    pygame.draw.polygon(screen, lit, [
+        P((pts[i][0] + normals[i][0] * widths[i] * 0.97,
+           pts[i][1] + normals[i][1] * widths[i] * 0.97)) for i in range(n)]
+        + [P((pts[i][0] + normals[i][0] * widths[i] * 0.34,
+              pts[i][1] + normals[i][1] * widths[i] * 0.34)) for i in reversed(range(n))])
+
+
+def _oak_branch(screen, P, p0, ang, length, width, depth, rng,
+                tint: float, tint_col, tips: list, unit_px: float):
+    """Recursive limb: one smooth tapered shape, then two or three children."""
     dx, dy = math.cos(ang), math.sin(ang)
-    # keep every limb inside the canvas: recursion used to walk off the top edge
-    p2 = (min(0.935, max(0.065, p0[0] + dx * length)),
-          min(0.94, max(0.055, p0[1] + dy * length)))
-    bend = rng.uniform(-0.22, 0.22) * length
+    p2 = (min(0.985, max(0.015, p0[0] + dx * length)),
+          min(0.99, max(0.02, p0[1] + dy * length)))
+    bend = rng.uniform(-0.34, 0.34) * length
     p1 = (p0[0] + dx * length * 0.55 - dy * bend,
           p0[1] + dy * length * 0.55 + dx * bend)
-    steps = 6 if depth > 1 else 4
-    prev = p0
-    for i in range(1, steps + 1):
-        t = i / steps
-        cur = _oak_bezier(p0, p1, p2, t)
-        w0 = width * (1.0 - 0.55 * (i - 1) / steps)
-        w1 = width * (1.0 - 0.55 * t)
-        nx, ny = -(cur[1] - prev[1]), (cur[0] - prev[0])
-        ln = math.hypot(nx, ny) or 1.0
-        nx, ny = nx / ln, ny / ln
-        quad = [P((prev[0] + nx * w0, prev[1] + ny * w0)),
-                P((cur[0] + nx * w1, cur[1] + ny * w1)),
-                P((cur[0] - nx * w1, cur[1] - ny * w1)),
-                P((prev[0] - nx * w0, prev[1] - ny * w0))]
-        pygame.draw.polygon(screen, OAK_BARK[0], quad)
-        # lit edge on the upper-left, like every other sprite in the game
-        lit = [P((prev[0] + nx * w0 * 0.75, prev[1] + ny * w0 * 0.75)),
-               P((cur[0] + nx * w1 * 0.75, cur[1] + ny * w1 * 0.75)),
-               P((cur[0] + nx * w1 * 0.15, cur[1] + ny * w1 * 0.15)),
-               P((prev[0] + nx * w0 * 0.15, prev[1] + ny * w0 * 0.15))]
-        pygame.draw.polygon(screen, OAK_BARK[2], lit)
-        prev = cur
-    if depth > 0:
-        for s in (-1, 1):
-            if rng.random() < 0.82:
-                _oak_limb(screen, P, unit_px,
-                          p2, ang + s * rng.uniform(0.28, 0.55),
-                          length * rng.uniform(0.52, 0.68), width * 0.62,
-                          depth - 1, rng, tips, twigs)
-    else:
-        tips.append((p2[0], p2[1], width))
-    if depth == 0:
-        t = 0.62
-        pt = _oak_bezier(p0, p1, p2, t)
-        twigs.append((pt[0], pt[1], width))
-
-
-def _leaf_blob(screen, P, cx, cy, r, col, phase, lobes=7, jag=0.15, squash=0.88):
-    """A lobed silhouette: a circle with a scalloped edge reads as foliage, not a ball."""
-    pts = []
-    steps = 44
-    for i in range(steps):
-        a = i / steps * math.tau
-        rr = r * (1.0 + jag * math.sin(lobes * a + phase)
-                  + 0.05 * math.sin(3 * a + phase * 2.0))
-        pts.append(P((cx + math.cos(a) * rr, cy + math.sin(a) * rr * squash)))
-    pygame.draw.polygon(screen, col, pts)
-
-
-def _oak_cluster(screen, P, unit_px, cx, cy, r, rng, dense=1.0):
-    """A leaf mass built from many small leaves, not circles.
-
-    Each cluster is a dark volume shadow, a dense fill of overlapping leaf shapes
-    in two greens, a sunlit crown of light leaves on the upper-left, and a ragged
-    rim of individual leaves that poke past the silhouette."""
-    leaf_w = max(3, int(r * 0.30 * unit_px))
-    leaf_h = max(2, int(r * 0.19 * unit_px))
-
-    def leaf(x, y, tone, big=1.0):
-        rect = pygame.Rect(0, 0, max(3, int(leaf_w * big)), max(2, int(leaf_h * big)))
-        rect.center = (int(P((x, y))[0]), int(P((x, y))[1]))
-        pygame.draw.ellipse(screen, tone, rect)
-
-    # shadow volume under the mass
-    shadow = pygame.Rect(0, 0, max(4, int(r * 2.05 * unit_px)),
-                         max(3, int(r * 1.9 * unit_px)))
-    shadow.center = (int(P((cx, cy + r * 0.10))[0]), int(P((cx, cy + r * 0.10))[1]))
-    pygame.draw.ellipse(screen, OAK_LEAF[0], shadow)
-    # body: overlapping mid leaves filling the disc
-    for i in range(int(26 * dense)):
-        a = rng.random() * math.tau
-        d = r * (0.85 * rng.random() ** 0.5)
-        leaf(cx + math.cos(a) * d, cy + math.sin(a) * d * 0.88,
-             OAK_LEAF[2] if rng.random() < 0.22 else OAK_LEAF[1],
-             1.15 if rng.random() < 0.3 else 0.9)
-    # a few dark gaps for depth
-    for i in range(int(4 * dense)):
-        a = rng.random() * math.tau
-        d = (0.2 + rng.random() * 0.5) * r
-        leaf(cx + math.cos(a) * d, cy + math.sin(a) * d * 0.85,
-             OAK_LEAF[0], 1.2)
-    # sunlit crown: light leaves crowded into the upper-left arc
-    for i in range(int(15 * dense)):
-        a = rng.uniform(math.pi * 0.75, math.pi * 2.0)
-        d = r * rng.uniform(0.15, 0.8)
-        leaf(cx + math.cos(a) * d - r * 0.12,
-             cy + math.sin(a) * d * 0.8 - r * 0.16,
-             OAK_LEAF[2] if rng.random() < 0.55 else OAK_LEAF[3], 0.85)
-    # ragged rim: individual leaves sticking out past the silhouette
-    for i in range(int(14 * dense)):
-        a = rng.random() * math.tau
-        rr = r * rng.uniform(0.88, 1.12)
-        lx = cx + math.cos(a) * rr
-        ly = cy + math.sin(a) * rr * 0.9
-        lit = (math.cos(a) > -0.6 and math.sin(a) < 0.3)
-        leaf(lx, ly, OAK_LEAF[3] if (lit and rng.random() < 0.5) else OAK_LEAF[1], 0.8)
+    steps = 7
+    pts = [_oak_bezier(p0, p1, p2, i / steps) for i in range(steps + 1)]
+    widths = [width * (1.0 - 0.68 * (i / steps) ** 0.9) for i in range(steps + 1)]
+    _oak_shape(screen, P, pts, widths, tint, tint_col)
+    # a rounded elbow at the joint: sharp polygon corners read as glued cardboard
+    if depth < 4:
+        pygame.draw.circle(screen, BARK, P(p0), max(2, int(width * 0.92 * unit_px)))
+        pygame.draw.circle(screen, _mix(BARK_M, tint_col, tint) if tint_col else BARK_M,
+                           P(p0), max(1, int(width * 0.55 * unit_px)))
+    if depth <= 0:
+        tips.append(p2)
+        return
+    kids = 3 if (depth >= 3 and rng.random() < 0.6) else 2
+    base_spread = rng.uniform(0.46, 0.80)
+    for k in range(kids):
+        spread = (k - (kids - 1) / 2) * base_spread + rng.uniform(-0.12, 0.12)
+        _oak_branch(screen, P, p2, ang + spread,
+                    length * rng.uniform(0.58, 0.82), width * rng.uniform(0.58, 0.72),
+                    depth - 1, rng, tint * 0.9, tint_col, tips, unit_px)
 
 
 def draw_oak(screen: pygame.Surface, to_screen, unit_px: float) -> None:
     """Draw the oak in tree coordinates; `to_screen` maps (x, y) in 0..1 to pixels.
 
-    The old version sprinkled flat circles over a stick and read as green confetti.
-    This one builds a real silhouette: a curved tapered trunk with bark and roots,
-    limbs that fork three levels deep along the branch directions (so every skill
-    branch grows out of a visible limb), and foliage made of layered leaf masses
-    with a dark under-layer, a lit crown and a ragged leafy rim.
+    Layout follows the reference (trunk, wide bare canopy, roots, nodes as leaves)
+    but the palette is warm brown with green tints instead of grey, because the game
+    is a bright adventure. Each of the five limbs is tinted with its branch colour,
+    which is what makes the five skill branches readable without any labels.
     """
     rng = random.Random(20261017)
 
     def P(p):
         return to_screen(p)
 
-    root = SK.position_of(SK.ROOT)
-    bx, by = 0.5, 0.972                      # base of the trunk
-    trunk_top = 0.505
-    hb, ht = 0.062, 0.021
+    bx, by = 0.5, 0.975
+    trunk_top = 0.62
+    hb, ht = 0.072, 0.028
 
-    # ---------------------------------------------------------------- backdrop
-    # soft canopy glow so the tree sits in a lit space instead of on flat black
+    # ---- backdrop: warm glow behind the canopy, so the tree sits in light
     glow = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
-    for i in range(9, 0, -1):
-        r = unit_px * 0.62 * i / 9
-        a = int(9 * (1 - i / 9) ** 1.5)
+    for i in range(10, 0, -1):
+        a = int(8 * (1 - i / 10) ** 1.4)
         if a <= 0:
             continue
-        pygame.draw.circle(glow, (60, 108, 74, a), P((0.5, 0.36)), int(r))
+        pygame.draw.circle(glow, (96, 128, 84, a), P((0.5, 0.34)),
+                           int(unit_px * 0.60 * i / 10))
     screen.blit(glow, (0, 0))
 
-    # ground: dark band plus a contact shadow under the trunk
-    pygame.draw.ellipse(screen, (18, 26, 22),
-                        pygame.Rect(int(P((0.24, 0.955))[0]), int(P((0.24, 0.955))[1]),
-                                    int(unit_px * 0.52), int(unit_px * 0.055)))
-    pygame.draw.ellipse(screen, (26, 36, 28),
-                        pygame.Rect(int(P((0.34, 0.958))[0]), int(P((0.34, 0.958))[1]),
-                                    int(unit_px * 0.32), int(unit_px * 0.034)))
+    # ---- ground shadow
+    pygame.draw.ellipse(screen, (26, 34, 26),
+                        pygame.Rect(int(P((0.20, 0.958))[0]), int(P((0.20, 0.958))[1]),
+                                    int(unit_px * 0.60), int(unit_px * 0.05)))
 
-    # ------------------------------------------------------------------- roots
-    for sx, spread in ((-1, 0.13), (-1, 0.085), (1, 0.10), (1, 0.15)):
-        x0 = bx + sx * hb * 0.5
-        pygame.draw.polygon(screen, OAK_BARK[0], [
-            P((x0, by - 0.085)), P((bx + sx * spread, by + 0.004)),
-            P((bx + sx * spread * 0.55, by + 0.012)), P((x0 - sx * hb * 0.35, by - 0.02))])
-        pygame.draw.polygon(screen, OAK_BARK[1], [
-            P((x0, by - 0.075)), P((bx + sx * spread * 0.92, by - 0.002)),
-            P((bx + sx * spread * 0.5, by + 0.004)), P((x0 - sx * hb * 0.1, by - 0.02))])
+    # ---- roots: smooth curved shapes flowing out of the trunk base
+    for sx, spread, drop, w0 in ((-1, 0.23, 0.012, 0.052), (-1, 0.13, 0.030, 0.040),
+                                 (1, 0.15, 0.026, 0.042), (1, 0.25, 0.010, 0.050),
+                                 (-1, 0.07, 0.040, 0.032), (1, 0.08, 0.038, 0.032)):
+        p0 = (bx + sx * hb * 0.5, by - 0.085)
+        p2 = (bx + sx * spread, by + drop)
+        p1 = (bx + sx * spread * 0.62, by - 0.045)
+        pts = [_oak_bezier(p0, p1, p2, i / 6) for i in range(7)]
+        widths = [w0 * (1.0 - 0.80 * (i / 6)) for i in range(7)]
+        _oak_shape(screen, P, pts, widths)
 
-    # ------------------------------------------------------------------ trunk
-    samples = []
-    for i in range(13):
-        t = i / 12
-        y = by + (trunk_top - by) * t
-        sway = 0.016 * math.sin(t * 2.1) - 0.006 * t
-        w = hb * (1 - t) + ht * t
-        samples.append((bx + sway, y, w))
-    left = [P((x - w, y)) for x, y, w in samples]
-    right = [P((x + w, y)) for x, y, w in samples]
-    body = left + right[::-1]
-    pygame.draw.polygon(screen, OAK_BARK[0], body)
-    # mid tone down the middle, lit band on the left (light comes from the left)
-    mid_l = [P((x - w * 0.35, y)) for x, y, w in samples]
-    mid_r = [P((x + w * 0.45, y)) for x, y, w in samples]
-    pygame.draw.polygon(screen, OAK_BARK[1], mid_l + mid_r[::-1])
-    lit_l = [P((x - w * 0.92, y)) for x, y, w in samples]
-    lit_r = [P((x - w * 0.5, y)) for x, y, w in samples]
-    pygame.draw.polygon(screen, OAK_BARK[2], lit_l + lit_r[::-1])
-    # bark: vertical grooves and two knots
-    for i in range(26):
+    # ---- trunk: sampled spine with sway, drawn as one continuous shape
+    spine = []
+    for i in range(17):
+        t = i / 16
+        y = by - 0.02 + (trunk_top - by + 0.02) * t
+        sway = 0.024 * math.sin(t * 2.4) - 0.010 * t
+        w = hb * (1 - t) ** 0.8 + ht * t
+        spine.append((bx + sway, y, w))
+    _oak_shape(screen, P, [(x, y) for x, y, _w in spine],
+               [w for _x, _y, w in spine])
+    # bark cracks and knots
+    for i in range(40):
         t = rng.random()
-        x, y, w = samples[min(12, int(t * 12))]
-        off = rng.uniform(-0.72, 0.55)
-        gx = x + w * off
-        pygame.draw.line(screen, OAK_BARK[0], P((gx, y)),
-                         P((gx + rng.uniform(-0.004, 0.004), y + rng.uniform(0.02, 0.05))),
-                         max(1, int(unit_px * 0.004)))
-    for ky in (0.72, 0.60):
-        kx, _, kw = samples[int((by - ky) / (by - trunk_top) * 12)]
-        pygame.draw.ellipse(screen, OAK_BARK[0],
-                            pygame.Rect(int(P((kx - kw * 0.3, ky))[0]),
-                                        int(P((kx - kw * 0.3, ky))[1]),
-                                        max(3, int(kw * 0.5 * unit_px)),
-                                        max(3, int(kw * 0.42 * unit_px))))
+        x, y, w = spine[min(16, int(t * 16))]
+        gx = x + w * rng.uniform(-0.82, 0.55)
+        pygame.draw.line(screen, BARK_D, P((gx, y)),
+                         P((gx + rng.uniform(-0.006, 0.006), y + rng.uniform(0.02, 0.06))),
+                         max(1, int(unit_px * 0.0035)))
+    for ky in (0.90, 0.80, 0.71):
+        idx = max(0, min(16, int((by - ky) / (by - trunk_top) * 16)))
+        kx, _, kw = spine[idx]
+        rect = pygame.Rect(0, 0, max(3, int(kw * 0.6 * unit_px)),
+                           max(3, int(kw * 0.5 * unit_px)))
+        rect.center = P((kx + kw * 0.05, ky))
+        pygame.draw.ellipse(screen, BARK_D, rect)
+        pygame.draw.ellipse(screen, BARK_EDGE, rect, 1)
 
-    # ------------------------------------------------------------------- limbs
+    # ---- main limbs: one per skill branch, tinted with the branch colour
     dirs = _branch_directions()
-    tips: list[tuple[float, float, float]] = []
-    twigs: list[tuple[float, float, float]] = []
+    tips: list[tuple[float, float]] = []
     for branch in SK.BRANCHES:
         dx, dy, length = dirs[branch["id"]]
-        ang = math.atan2(dy, dx)
-        start = (bx + dx * 0.045, trunk_top + 0.03 + dy * 0.02)
-        # `length` is measured from the ROOT, so subtract the trunk: without this the
-        # limbs shot straight through the top of the canvas and looked cropped.
-        reach = max(0.10, length - (by - trunk_top) * 0.98)
-        _oak_limb(screen, P, unit_px, start, ang, reach, 0.021, 2,
-                  rng, tips, twigs)
+        col = tuple(branch["color"])
+        ang = math.atan2(dy, dx) + rng.uniform(-0.07, 0.07)
+        start = (bx + dx * 0.045, trunk_top - 0.005 + rng.uniform(-0.02, 0.02))
+        reach = max(0.10, length - (by - trunk_top) * 0.94) * rng.uniform(0.92, 1.06)
+        _oak_branch(screen, P, start, ang, reach, 0.032, 4, rng,
+                    0.40, _mix(BARK_M, col, 0.5), tips, unit_px)
+    # two filler limbs so the canopy spreads wide instead of leaving bald gaps
+    for ang_deg in (-158, -22):
+        _oak_branch(screen, P, (bx, trunk_top + 0.06),
+                    math.radians(ang_deg), 0.30, 0.022, 3, rng, 0.0, None, tips, unit_px)
 
-    # ---------------------------------------------------------------- foliage
-    # twigs first so every leaf mass is visibly attached to wood
-    for (tx, ty, w) in tips:
-        for _ in range(3):
-            a = rng.random() * math.tau
-            pygame.draw.line(screen, OAK_BARK[0], P((tx, ty)),
-                             P((tx + math.cos(a) * 0.035, ty + math.sin(a) * 0.035)), 1)
-    for (tx, ty, w) in twigs:
-        pygame.draw.line(screen, OAK_BARK[0], P((tx, ty)),
-                         P((tx - (tx - bx) * 0.08, ty - (ty - trunk_top) * 0.08)), 1)
-    # one dark silhouette under everything: without it the white page showed through
-    # the gaps between clusters and the crown looked like floating blobs
-    for (ccx, ccy, rr, sq) in ((0.5, 0.34, 0.34, 0.80), (0.5, 0.30, 0.28, 0.72)):
-        _leaf_blob(screen, P, ccx, ccy, rr, OAK_LEAF[0], 1.7, lobes=9, jag=0.10, squash=sq)
-        _leaf_blob(screen, P, ccx, ccy - rr * 0.04, rr * 0.93, OAK_LEAF[1], 2.4,
-                   lobes=8, jag=0.12, squash=sq)
-    # a connected crown: overlapping masses in a disc around the branch fan
-    for i in range(34):
-        a = rng.random() * math.tau
-        d = 0.30 * rng.random() ** 0.55          # fill the middle, not just a ring
-        cx = 0.5 + math.cos(a) * d
-        cy = 0.33 + math.sin(a) * d * 0.82
-        r = 0.050 + rng.random() * 0.024
-        _oak_cluster(screen, P, unit_px, cx, cy, r, rng, 0.85)
-    # the branch-tip clusters, the biggest ones
-    for (tx, ty, w) in tips:
-        _oak_cluster(screen, P, unit_px, tx, ty, 0.075 + rng.random() * 0.02, rng, 1.0)
-    for (tx, ty, w) in twigs:
-        _oak_cluster(screen, P, unit_px, tx, ty, 0.055 + rng.random() * 0.014, rng, 0.7)
-
-    # ------------------------------------------------------- ground details
-    for i in range(18):                      # grass tufts
-        gx = 0.30 + rng.random() * 0.40
-        gy = 0.962 + rng.random() * 0.016
+    # ---- living touches: moss on the limb ends, grass and mushrooms at the roots
+    for (tx, ty) in tips[:80]:
+        if ty > 0.55 or abs(tx - 0.5) < 0.06:
+            continue
+        if rng.random() < 0.30:
+            pygame.draw.circle(screen, (86, 132, 66), P((tx, ty)),
+                               max(1, int(unit_px * rng.uniform(0.003, 0.007))))
+    for i in range(24):
+        gx = 0.24 + rng.random() * 0.52
+        gy = 0.962 + rng.random() * 0.014
         for k in (-1, 0, 1):
-            pygame.draw.line(screen, (44, 76, 44), P((gx, gy)),
-                             P((gx + k * 0.006, gy - 0.012 - rng.random() * 0.008)), 1)
-    for mx in (0.40, 0.44, 0.60, 0.635):     # mushrooms at the roots
-        my = 0.958 + rng.random() * 0.008
+            pygame.draw.line(screen, (58, 96, 54), P((gx, gy)),
+                             P((gx + k * 0.006, gy - 0.010 - rng.random() * 0.008)), 1)
+    for mx in (0.36, 0.40, 0.605, 0.64):
+        my = 0.960 + rng.random() * 0.008
         pygame.draw.rect(screen, (206, 196, 176),
                          pygame.Rect(int(P((mx, my))[0]) - 1, int(P((mx, my))[1]) - 4, 2, 4))
-        pygame.draw.ellipse(screen, (168, 62, 52),
+        pygame.draw.ellipse(screen, (176, 66, 56),
                             pygame.Rect(int(P((mx, my))[0]) - 3, int(P((mx, my))[1]) - 6, 6, 4))
-    pygame.draw.circle(screen, (70, 54, 34), P(root), max(2, int(unit_px * 0.012)))
 
 
 def build_oak(w: int, h: int) -> pygame.Surface:
@@ -383,6 +341,10 @@ class Renderer:
         self._light_objects = None
         self._shade_key: tuple[int, int] | None = None
         self._shade = pygame.Surface((1, 1), pygame.SRCALPHA)
+        self._panel_cache: dict = {}
+        self._glyph_cache: dict = {}
+        self._outline_cache: dict = {}
+        self._halo_cache: dict = {}
         self._oak_src: pygame.Surface | None = None
         self._oak_cache: dict[int, pygame.Surface] = {}
         self._build_glows()
@@ -472,6 +434,37 @@ class Renderer:
             cached = pygame.transform.smoothscale(self._oak_src, (key, key))
             self._oak_cache[key] = cached
         return cached
+
+    def _outlined(self, surf: pygame.Surface) -> pygame.Surface:
+        """A dark rim around the hero so he never gets lost among the villagers."""
+        key = id(surf)
+        cached = self._outline_cache.get(key)
+        if cached is not None:
+            return cached
+        pad = 2
+        out = pygame.Surface((surf.get_width() + pad * 2, surf.get_height() + pad * 2),
+                             pygame.SRCALPHA)
+        dark = surf.copy()
+        dark.fill((18, 20, 26, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        for dx, dy in ((pad, 0), (0, pad), (pad * 2, pad), (pad, pad * 2)):
+            out.blit(dark, (dx, dy))
+        out.blit(surf, (pad, pad))
+        self._outline_cache[key] = out
+        return out
+
+    def _glyph(self, icon_name: str, size: int, tone) -> pygame.Surface:
+        """A flat pale silhouette of an item icon — the reference's glyph language."""
+        key = (icon_name, size, tuple(tone))
+        cached = self._glyph_cache.get(key)
+        if cached is not None:
+            return cached
+        icon = pygame.transform.scale(SP.item_icon_surface(icon_name), (size, size))
+        icon.fill((255, 255, 255, 255), special_flags=pygame.BLEND_RGB_MAX)   # keep alpha
+        icon.fill((*tone, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        if len(self._glyph_cache) > 400:
+            self._glyph_cache.clear()
+        self._glyph_cache[key] = icon
+        return icon
 
     def _bush_surface(self, x: int, y: int) -> pygame.Surface:
         """Bushes used to be drawn disc by disc every single frame; now they are baked."""
@@ -744,6 +737,7 @@ class Renderer:
         key = f"hero_{view}_{frame}"
         flip = p["dir"] == "left"
         surf = self.sprites[key + ("_f" if flip else "")]
+        surf = self._outlined(surf)
         self.draw_shadow(p["x"], p["y"], cam_x, cam_y, 32)
         # a warm ring so the player is never confused with the villagers
         ring = pygame.Surface((44, 20), pygame.SRCALPHA)
@@ -790,7 +784,9 @@ class Renderer:
         self.logical.blit(swing, (cx - 45, cy - 45))
 
     def draw_mob(self, m: dict, cam_x: float, cam_y: float) -> None:
-        view = "side" if m["dir"] in ("left", "right") else "down"
+        view = "side" if m["dir"] in ("left", "right") else m["dir"]
+        if f"{m['kind']}_{view}_0" not in self.sprites:
+            view = "down"
         frame = 1 if (m["moving"] and m["frame"]) else 0
         flip = m["dir"] == "left"
         key = f"{m['kind']}_{view}_{frame}" + ("_f" if flip else "")
@@ -833,8 +829,12 @@ class Renderer:
                       (140, 190, 255))
 
     def draw_npc(self, n: dict, cam_x: float, cam_y: float) -> None:
-        key = f"npc_{n['kind']}_{1 if n['anim_t'] > 0.4 else 0}"
-        surf = self.sprites.get(key)
+        view = "side" if n.get("dir") in ("left", "right") else n.get("dir", "down")
+        if f"npc_{n['kind']}_{view}_0" not in self.sprites:
+            view = "down"
+        flip = n.get("dir") == "left"
+        key = f"npc_{n['kind']}_{view}_{1 if n['anim_t'] > 0.4 else 0}"
+        surf = self.sprites.get(key + ("_f" if flip else ""))
         if not surf:
             return
         self.draw_shadow(n["x"], n["y"], cam_x, cam_y, 30)
@@ -929,33 +929,42 @@ class Renderer:
 
     # ------------------------------------------------------------------- HUD
     def panel(self, screen, rect, fill=(11, 13, 21, 243), border=UI_EDGE, radius=0) -> None:
-        """One panel style for the whole UI: opaque enough to keep text crisp, with a
-        soft drop shadow and a one-pixel inner highlight so it reads as a raised card
-        instead of a translucent box the world shows through."""
+        """One panel style for the whole UI: opaque card, drop shadow, inner highlight.
+
+        The composite is cached per size and colour — rebuilding the shadow surface
+        every frame cost about 3 ms of the 60 fps budget on its own.
+        """
         x, y, w, h = rect
-        shadow = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
-        for i, a in ((0, 26), (3, 20), (6, 12)):
-            pygame.draw.rect(shadow, (0, 0, 0, a), (i, i, w + 8 - i * 2, h + 8 - i * 2),
-                             border_radius=radius + 2 if radius else 0)
-        screen.blit(shadow, (x - 4, y - 4))
-        surf = pygame.Surface((w, h), pygame.SRCALPHA)
-        if radius:
-            pygame.draw.rect(surf, fill, (0, 0, w, h), border_radius=radius)
-            pygame.draw.rect(surf, border, (0, 0, w, h), 1, border_radius=radius)
-            pygame.draw.rect(surf, (255, 255, 255, 16), (1, 1, w - 2, h - 2), 1,
-                             border_radius=max(0, radius - 1))
-        else:
-            surf.fill(fill)
-            pygame.draw.rect(surf, border, (0, 0, w, h), 1)
-            pygame.draw.line(surf, (255, 255, 255, 18), (0, 0), (w, 0))
-        screen.blit(surf, (x, y))
+        key = (w, h, tuple(fill), tuple(border) if not isinstance(border, str) else border,
+               radius)
+        surf = self._panel_cache.get(key)
+        if surf is None:
+            surf = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
+            for i, a in ((0, 26), (3, 20), (6, 12)):
+                pygame.draw.rect(surf, (0, 0, 0, a), (i + 4, i + 4, w + 8 - i * 2, h + 8 - i * 2),
+                                 border_radius=radius + 2 if radius else 0)
+            body = pygame.Surface((w, h), pygame.SRCALPHA)
+            if radius:
+                pygame.draw.rect(body, fill, (0, 0, w, h), border_radius=radius)
+                pygame.draw.rect(body, border, (0, 0, w, h), 1, border_radius=radius)
+                pygame.draw.rect(body, (255, 255, 255, 16), (1, 1, w - 2, h - 2), 1,
+                                 border_radius=max(0, radius - 1))
+            else:
+                body.fill(fill)
+                pygame.draw.rect(body, border, (0, 0, w, h), 1)
+                pygame.draw.line(body, (255, 255, 255, 18), (0, 0), (w, 0))
+            surf.blit(body, (4, 4))
+            if len(self._panel_cache) > 40:
+                self._panel_cache.clear()
+            self._panel_cache[key] = surf
+        screen.blit(surf, (x - 4, y - 4))
 
     def draw_hud(self, screen) -> None:
         g, p, S = self.game, self.game.player, self.s
         st = g.stats()
         w = S(340)
         self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.text(self.font_big, "Pixel patch 2.3", True,
+        screen.blit(self.text(self.font_big, "Pixel patch 2.4", True,
                                          (250, 246, 226)), (S(20), S(14)))
         screen.blit(self.text(self.font_small, 
             f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
@@ -1446,8 +1455,11 @@ class Renderer:
                 pygame.draw.line(screen, col, (bx_, by_), (ax, ay), max(2, int(w)))
 
         # ---- nodes ----
+        # Reference language: dark plate, branch-coloured ring, pale glyph icon and a
+        # soft halo. Passive skills are round, active abilities are square badges, so
+        # the two tiers are distinguishable at a glance even at the overview zoom.
         gap_px = SK.min_node_gap() * unit
-        radius = max(S(7), min(S(20), int(gap_px * 0.36)))
+        radius = max(S(7), min(S(21), int(gap_px * 0.37)))
         show_labels = radius >= S(10)
         self.tree_rects = []
         mouse = pygame.mouse.get_pos()
@@ -1460,8 +1472,8 @@ class Renderer:
             if not (area_x - S(60) < cx < area_x + area_w + S(60)
                     and area_y - S(60) < cy < area_y + area_h + S(60)):
                 continue
-            rect = pygame.Rect(cx - radius - S(3), cy - radius - S(3),
-                               (radius + S(3)) * 2, (radius + S(3)) * 2)
+            pad = radius + S(4)
+            rect = pygame.Rect(cx - pad, cy - pad, pad * 2, pad * 2)
             self.tree_rects.append((rect, skill["id"]))
             if rect.collidepoint(mouse):
                 hovered = skill["id"]
@@ -1470,70 +1482,95 @@ class Renderer:
             branch = next((b for b in SK.BRANCHES if b["id"] == skill["branch"]), None)
             col = tuple(branch["color"]) if branch else (226, 214, 160)
             far = node["branch"] not in (skill["branch"], "root") and skill["branch"] != "root"
-            # glow behind learnable nodes
-            if avail:
-                pulse = 0.5 + 0.5 * math.sin(self.t * 4)
-                glow = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
-                pygame.draw.circle(glow, (*col, int(30 + 40 * pulse)),
-                                   (radius * 2, radius * 2), int(radius * 1.7))
-                screen.blit(glow, (cx - radius * 2, cy - radius * 2))
-            # dark plate under every node: without it the icons vanish into the canopy
-            pygame.draw.circle(screen, (9, 12, 19), (cx + S(1), cy + S(2)), radius + S(4))
-            pygame.draw.circle(screen, (20, 25, 35), (cx, cy), radius + S(3))
-            pygame.draw.circle(screen, (32, 38, 50), (cx, cy), radius)
-            if done:
-                pygame.draw.circle(screen, (30, 46, 30), (cx, cy), max(1, radius - S(3)))
-                pygame.draw.circle(screen, (244, 214, 122), (cx, cy), radius, max(2, S(3)))
-                pygame.draw.circle(screen, (150, 200, 140), (cx, cy), radius + S(2),
-                                   max(1, S(1)))
-            elif avail:
-                pygame.draw.circle(screen, (*col, 70), (cx, cy), radius)
-                pygame.draw.circle(screen, col, (cx, cy), radius, max(2, S(3)))
+            active = skill["kind"] == "active"
+            selected = skill["id"] == g.tree_cursor
+            if far:                              # other branches recede, but stay coloured
+                col = _mix(col, (86, 92, 108), 0.55)
+            # halo
+            if avail or done or selected:
+                pulse = 0.5 + 0.5 * math.sin(self.t * 3.4 + nx * 6)
+                halo = self._halo_cache.get((col, radius))
+                if halo is None:
+                    halo = pygame.Surface((radius * 4, radius * 4), pygame.SRCALPHA)
+                    for k in range(6, 0, -1):
+                        pygame.draw.circle(halo, (*col, int(10 + 3 * k)),
+                                           (radius * 2, radius * 2), int(radius * (1.0 + 0.16 * k)))
+                    self._halo_cache[(col, radius)] = halo
+                halo.set_alpha(int(150 + 90 * pulse) if avail else 120)
+                screen.blit(halo, (cx - radius * 2, cy - radius * 2))
+            # plate: square for abilities, circle for passives.
+            # The ring keeps the BRANCH colour (identity); state is carried by
+            # brightness, an extra gold ring and the halo, so the two never fight.
+            ring_col = col if (done or avail) else _mix(col, (74, 78, 92), 0.62)
+            fill = (26, 30, 42) if not done else _mix((38, 34, 26), col, 0.22)
+            if not (done or avail):
+                fill = (18, 21, 30)
+            if active:
+                box = pygame.Rect(0, 0, radius * 2, radius * 2)
+                box.center = (cx, cy)
+                pygame.draw.rect(screen, (8, 10, 16), box.inflate(S(4), S(4)),
+                                 border_radius=max(2, S(5)))
+                pygame.draw.rect(screen, fill, box, border_radius=max(2, S(4)))
+                ring_w = max(2, S(3) if (done or avail) else S(2))
+                pygame.draw.rect(screen, ring_col, box, ring_w,
+                                 border_radius=max(2, S(4)))
+                pygame.draw.rect(screen, _mix(col, (255, 255, 255), 0.45),
+                                 box.inflate(-S(6), -S(6)), 1, border_radius=max(1, S(3)))
             else:
-                pygame.draw.circle(screen, (26, 30, 40), (cx, cy), radius)
-                pygame.draw.circle(screen, (118, 122, 136) if not far else (78, 82, 94),
-                                   (cx, cy), radius, max(1, S(2)))
-            icon_px = max(S(12), int(radius * 2.1))
-            icon = SP.item_icon_surface(skill["icon"])
-            icon = pygame.transform.scale(icon, (icon_px, icon_px))
-            if not (done or avail):        # locked icons stay visible but recede
-                icon = icon.copy()
-                icon.fill((150, 150, 168, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            screen.blit(icon, (cx - icon_px // 2, cy - icon_px // 2))
-            if skill["kind"] == "active":        # active skills get a corner pip
+                pygame.draw.circle(screen, (8, 10, 16), (cx + S(1), cy + S(2)), radius + S(3))
+                pygame.draw.circle(screen, fill, (cx, cy), radius + S(1))
+                ring_w = max(2, S(3) if (done or avail) else S(2))
+                pygame.draw.circle(screen, ring_col, (cx, cy), radius, ring_w)
+            if done:
+                # learned = a check badge, never a colour: gold and green are also
+                # branch hues here, so state must not reuse them
+                bx_, by_ = cx + int(radius * 0.72), cy + int(radius * 0.72)
+                br = max(S(5), radius // 3)
+                pygame.draw.circle(screen, (12, 16, 24), (bx_, by_), br + S(1))
+                pygame.draw.circle(screen, (238, 208, 118), (bx_, by_), br)
+                pygame.draw.lines(screen, (28, 26, 18), False,
+                                  [(bx_ - br * 0.45, by_),
+                                   (bx_ - br * 0.08, by_ + br * 0.42),
+                                   (bx_ + br * 0.5, by_ - br * 0.40)],
+                                  max(2, br // 3))
+            # glyph: pale, tinted with the branch colour, readable on the dark plate
+            icon_px = max(S(11), int(radius * 1.55))
+            tone = (255, 250, 235) if done else _mix(col, (255, 255, 255), 0.62)
+            if not (done or avail):
+                tone = _mix(tone, (120, 124, 140), 0.55)
+            glyph = self._glyph(skill["icon"], icon_px, tone)
+            screen.blit(glyph, (cx - icon_px // 2, cy - icon_px // 2))
+            if active:                           # abilities get a small gem marker
                 pip = max(S(3), radius // 4)
-                pygame.draw.circle(screen, (120, 200, 255), (cx + radius - pip, cy - radius + pip),
-                                   pip)
+                pygame.draw.circle(screen, (120, 200, 255) if (done or avail) else (86, 96, 120),
+                                   (cx + radius - pip, cy - radius + pip), pip)
             # learned and learnable nodes always carry a name; locked ones only near
             # the cursor, so the overview stays quiet instead of turning into a word cloud
             label_it = (show_labels and (done or avail)) or near_cursor or rect.collidepoint(mouse)
             if label_it:
                 name = self.text(self.font_tiny, skill["name"], True,
-                                             (238, 242, 252) if (done or avail) else (168, 174, 188))
+                                 (242, 246, 255) if (done or avail) else (166, 172, 188))
                 bg = pygame.Surface((name.get_width() + S(8), name.get_height() + S(4)),
                                     pygame.SRCALPHA)
-                bg.fill((8, 10, 16, 232))
+                bg.fill((8, 10, 16, 214))
                 lx = cx - bg.get_width() // 2
                 lx = max(area_x + S(3), min(area_x + area_w - bg.get_width() - S(3), lx))
-                ly = cy + radius + S(2)
-                box = pygame.Rect(lx - S(2), ly - S(1), bg.get_width() + S(4),
-                                  bg.get_height() + S(2))
-                # never let two names collide: the selected one always wins
-                if skill["id"] == g.tree_cursor or not box.collidelist(label_boxes) >= 0:
-                    label_boxes.append(box)
+                ly = cy + radius + S(3)
+                box2 = pygame.Rect(lx - S(2), ly - S(1), bg.get_width() + S(4),
+                                   bg.get_height() + S(2))
+                if selected or not box2.collidelist(label_boxes) >= 0:
+                    label_boxes.append(box2)
                     screen.blit(bg, (lx, ly))
-                    pygame.draw.rect(screen, (58, 64, 78),
-                                     (lx, ly, bg.get_width(), bg.get_height()), 1)
                     screen.blit(name, (lx + S(4), ly + S(2)))
-            if skill["id"] == g.tree_cursor:
-                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), radius + S(6), max(2, S(2)))
+            if selected:
+                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), radius + S(7), max(2, S(2)))
                 arrow = S(7 + int(3 * (0.5 + 0.5 * math.sin(self.t * 6))))
                 pygame.draw.polygon(screen, (255, 240, 170),
-                                    [(cx, cy - radius - S(9) - arrow),
-                                     (cx - S(8), cy - radius - S(9)),
-                                     (cx + S(8), cy - radius - S(9))])
+                                    [(cx, cy - radius - S(11) - arrow),
+                                     (cx - S(8), cy - radius - S(11)),
+                                     (cx + S(8), cy - radius - S(11))])
             elif hovered == skill["id"]:
-                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), radius + S(6), S(2))
+                pygame.draw.circle(screen, (255, 255, 255), (cx, cy), radius + S(7), S(2))
 
         # ---- branch names at the limb tips, so the tree reads at any zoom ----
         for branch in SK.BRANCHES:
@@ -1567,17 +1604,33 @@ class Renderer:
         # ---- legend, so the node rings and pips mean something ----
         legend_y = area_y + area_h - S(20)
         lx = area_x + S(10)
-        for text, col, pip in (("изучено", (244, 214, 122), False),
-                               ("доступно", (150, 220, 150), False),
-                               ("заперто", (110, 114, 126), False),
-                               ("активное умение", (120, 200, 255), True)):
-            pygame.draw.circle(screen, (26, 30, 40), (lx + S(7), legend_y + S(5)), S(6))
-            pygame.draw.circle(screen, col, (lx + S(7), legend_y + S(5)), S(6), S(2))
-            if pip:
-                pygame.draw.circle(screen, (120, 200, 255), (lx + S(11), legend_y + S(1)), S(2))
+        # colour = branch, brightness = state, so the legend explains both
+        for text, col, extra in (("цвет — ветвь", (198, 150, 92), "branch"),
+                                 ("✓ изучено", (238, 208, 118), "check"),
+                                 ("свечение — доступно", (150, 220, 190), "glow"),
+                                 ("квадрат — активное", (120, 200, 255), "square")):
+            cxx, cyy = lx + S(7), legend_y + S(5)
+            if extra == "square":
+                box = pygame.Rect(0, 0, S(12), S(12))
+                box.center = (cxx, cyy)
+                pygame.draw.rect(screen, (22, 26, 36), box, border_radius=S(3))
+                pygame.draw.rect(screen, col, box, S(2), border_radius=S(3))
+            elif extra == "check":
+                pygame.draw.circle(screen, (12, 16, 24), (cxx, cyy), S(6))
+                pygame.draw.circle(screen, col, (cxx, cyy), S(6))
+                pygame.draw.lines(screen, (28, 26, 18), False,
+                                  [(cxx - S(3), cyy), (cxx - S(1), cyy + S(3)),
+                                   (cxx + S(3), cyy - S(3))], S(2))
+            elif extra == "branch":
+                for k, cc in enumerate(((210, 96, 92), (120, 168, 220), (186, 130, 220))):
+                    pygame.draw.circle(screen, cc, (cxx - S(4) + k * S(4), cyy), S(4))
+            else:
+                pygame.draw.circle(screen, (26, 30, 40), (cxx, cyy), S(6))
+                pygame.draw.circle(screen, col, (cxx, cyy), S(6), S(2))
+                pygame.draw.circle(screen, (*col, 60), (cxx, cyy), S(9), 3)
             label = self.text(self.font_tiny, text, True, (176, 184, 200))
-            screen.blit(label, (lx + S(17), legend_y))
-            lx += S(17) + label.get_width() + S(22)
+            screen.blit(label, (lx + S(18), legend_y))
+            lx += S(18) + label.get_width() + S(20)
 
         # ---- top bar ----
         title = self.text(self.font_title, "Дуб навыков", True, (255, 238, 176))
@@ -1912,7 +1965,7 @@ class Renderer:
         if note:
             n = self.text(self.font_small, note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.text(self.font_small, "Pixel patch — версия 2.3", True,
+        ver = self.text(self.font_small, "Pixel patch — версия 2.4", True,
                                      (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
@@ -2040,7 +2093,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.3")
+    pygame.display.set_caption("Pixel patch 2.4")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

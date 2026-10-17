@@ -5,7 +5,7 @@
 
 | Версия | Технологии | Где запускать |
 |---|---|---|
-| **2.3** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
+| **2.4** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
 | **1.0** | HTML + p5.js | `index.html` в браузере |
 
 ## Играть
@@ -131,6 +131,14 @@ python -m venv .venv
 Навигация: `TAB` — вкладка, `↑`/`↓` — строка, `←`/`→` — значение, `Enter` — выбрать,
 `ESC` — назад. Всё сохраняется в `~/.pixel_rpg_adventure_config.json` и применяется
 сразу.
+
+## Графика
+
+Мир, тайлы, объекты и иконки рисуются процедурно (`art.py`, `sprites.py`), а
+персонажи и монстры — спрайтами из набора
+[Ninja Adventure Asset Pack](https://pixel-boy.itch.io/ninja-adventure-asset-pack)
+(Pixel-Boy, лицензия CC0, public domain). В `python/assets/ninja` лежат только
+используемые листы; если папки нет, игра откатывается на процедурных персонажей.
 
 ## Разрешение экрана
 

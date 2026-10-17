@@ -944,6 +944,14 @@ def build_sprites() -> dict[str, pygame.Surface]:
         for frame in (0, 1):
             add(f"{kind}_down_{frame}", builder(frame, "down"))
             add(f"{kind}_side_{frame}", builder(frame, "side"))
+    # the Ninja Adventure pack overrides the procedural actors when its assets are
+    # present; the procedural art stays as the fallback for anything missing
+    try:
+        import packart
+        for key, surf in packart.build().items():
+            out[key] = surf
+    except Exception:
+        pass
     _sprite_cache = out
     return out
 

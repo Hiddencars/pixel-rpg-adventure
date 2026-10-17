@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel patch 2.3 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel patch 2.4 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -358,23 +358,42 @@ def _body() -> int:
     print(f"music: {len(MUS.TRACKS)} tracks, region -> {region_track}, "
           f"battle theme on combat, one channel only, toggling works")
 
+    # -------------------------------------------------------------- pack art
+    try:
+        import packart
+        pack = packart.build()
+        if pack:
+            check("hero_down_0" in pack and "hero_up_0" in pack,
+                  "pack hero is missing its views")
+            check("npc_peasant_0" in pack, "pack villagers are not keyed for the renderer")
+            check(len(pack) > 200, f"only {len(pack)} pack sprites loaded")
+            print(f"pack art: {len(pack)} sprites (Ninja Adventure, CC0)")
+        else:
+            print("pack art: assets not found, procedural sprites in use")
+    except Exception as exc:
+        problems.append(f"pack art crashed: {type(exc).__name__}: {exc}")
+
     # ------------------------------------------------------------------ oak
     try:
         oak = R.build_oak(420, 420)
-        greens = browns = 0
+        bark = left_arm = right_arm = 0
         for y in range(0, 420, 3):
             for x in range(0, 420, 3):
                 r_, g_, b_, a_ = oak.get_at((x, y))
                 if a_ < 40:
                     continue
-                if g_ > r_ + 12 and g_ > b_ + 12:
-                    greens += 1
-                elif r_ > g_ + 12 and r_ > b_ + 8:
-                    browns += 1
-        check(greens > 400, f"oak canopy is too thin ({greens} leaf samples)")
-        check(browns > 60, f"oak trunk is too thin ({browns} bark samples)")
-        print(f"oak: {greens} leaf samples, {browns} bark samples, draws in "
-              f"{'<1' if True else ''} frame")
+                if r_ > g_ + 12 and r_ > b_ + 8:
+                    bark += 1
+                    if y < 190:
+                        if x < 140:
+                            left_arm += 1
+                        elif x > 280:
+                            right_arm += 1
+        check(bark > 300, f"oak trunk and limbs are too thin ({bark} bark samples)")
+        check(left_arm > 12 and right_arm > 12,
+              f"oak canopy does not spread wide (left {left_arm}, right {right_arm})")
+        print(f"oak: {bark} bark samples, canopy reaches both sides "
+              f"({left_arm}/{right_arm} samples)")
     except Exception as exc:
         problems.append(f"oak render crashed: {type(exc).__name__}: {exc}")
 

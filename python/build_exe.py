@@ -8,6 +8,7 @@ Output: dist/PixelPatch.exe
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +17,8 @@ HERE = Path(__file__).resolve().parent
 GAME = HERE / "game.py"
 NAME = "PixelPatch"
 MODULES = ("art", "sprites", "items", "skills", "sounds", "music", "quests", "world",
-           "render", "selftest")
+           "render", "selftest", "packart")
+ASSETS = HERE / "assets"        # Ninja Adventure sprite sheets (CC0)
 
 
 def run_selftest() -> None:
@@ -47,6 +49,9 @@ def build() -> None:
         "--workpath", str(HERE / "build"),
         "--specpath", str(HERE),
     ]
+    if ASSETS.is_dir():
+        sep = ";" if os.name == "nt" else ":"
+        args += ["--add-data", f"{ASSETS}{sep}assets"]
     for module in MODULES:
         args += ["--hidden-import", module]
     pyi.run(args)
