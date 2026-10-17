@@ -69,16 +69,15 @@ def _load_mob_kinds() -> set[str]:
 
 
 def _load_region_ids() -> set[str]:
-    """Region ids from world.py, with the same fallback."""
+    """Region ids from world.py — из статической константы, без генерации мира."""
     try:
-        import world
-        ids = {r["id"] for r in world.World(seed=2026).regions}
-        if ids:
-            return ids
+        from world import REGION_IDS
+        if REGION_IDS:
+            return set(REGION_IDS)
     except Exception:
         pass
     src = (Path(__file__).with_name("world.py")).read_text(encoding="utf-8")
-    return set(re.findall(r'\{"id": "([a-z_]+)",\s*"name"', src))
+    return set(re.findall(r'"id": "([a-z_]+)"', src))
 
 
 MOB_KINDS: set[str] = _load_mob_kinds()

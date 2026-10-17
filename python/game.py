@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.5 — Python / pygame-ce.
+"""Pixel patch 2.6 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -273,7 +273,7 @@ class Game:
         self.learn("root")                     # the trunk is always unlocked
         for item_id, count in (("potion", 3), ("herb", 3), ("mana_potion", 1)):
             self.add_item(item_id, count)
-        self.toast("Новая игра: мир стал в пять раз больше!", "#ffe066")
+        self.toast("Новая игра: мир вырос в десять раз — 320 000 клеток", "#ffe066")
 
     # ------------------------------------------------------------- sound
     def sound(self, name: str, volume: float = 1.0) -> None:
@@ -1060,7 +1060,7 @@ class Game:
                 continue
             x0, y0, x1, y1 = region["rect"]
             area = max(1, (x1 - x0) * (y1 - y0))
-            count = max(4, min(46, area // 420))
+            count = max(6, min(240, area // 700))
             level = region.get("level", 1)
             for _ in range(count):
                 spot = self.world.random_walkable_in((x0, y0, x1, y1), rng, tries=40)
@@ -1299,21 +1299,39 @@ class Game:
             if m["anim_t"] > 0.2:
                 m["anim_t"] = 0.0
                 m["frame"] = 1 - m["frame"]
-        # keep monsters from stacking
-        for i in range(len(self.mobs)):
-            a = self.mobs[i]
-            if not a["alive"]:
-                continue
-            for j in range(i + 1, len(self.mobs)):
-                b = self.mobs[j]
-                if not b["alive"]:
+        # keep monsters from stacking — через пространственные корзины.
+        # Наивный двойной цикл был O(n²): при 91 мобе это 4 тыс. пар, при 554 —
+        # уже 153 тыс. пар на кадр, и один этот блок съедал 60% кадра.
+        cell = 2.0
+        grid: dict[tuple[int, int], list[dict]] = {}
+        for m in self.mobs:
+            if m["alive"]:
+                grid.setdefault((int(m["x"] // cell), int(m["y"] // cell)), []).append(m)
+        # соседние ячейки: только «вперёд», чтобы каждая пара считалась один раз
+        NEIGH = ((0, 1), (1, -1), (1, 0), (1, 1))
+        for (gx, gy), bucket in grid.items():
+            for i in range(len(bucket)):
+                a = bucket[i]
+                for b in bucket[i + 1:]:
+                    self._separate(a, b)
+            for (ox, oy) in NEIGH:
+                other = grid.get((gx + ox, gy + oy))
+                if not other:
                     continue
-                d = math.hypot(a["x"] - b["x"], a["y"] - b["y"])
-                if 0 < d < 0.7:
-                    push = (0.7 - d) / 2
-                    ux, uy = (a["x"] - b["x"]) / d, (a["y"] - b["y"]) / d
-                    self.try_move(a, ux * push, uy * push)
-                    self.try_move(b, -ux * push, -uy * push)
+                for a in bucket:
+                    for b in other:
+                        self._separate(a, b)
+
+    def _separate(self, a: dict, b: dict) -> None:
+        dx, dy = a["x"] - b["x"], a["y"] - b["y"]
+        d2 = dx * dx + dy * dy
+        if d2 <= 0.0 or d2 >= 0.49:        # 0.7²
+            return
+        d = math.sqrt(d2)
+        push = (0.7 - d) / 2
+        ux, uy = dx / d, dy / d
+        self.try_move(a, ux * push, uy * push)
+        self.try_move(b, -ux * push, -uy * push)
 
     def update_allies(self, dt: float) -> None:
         for a in list(self.allies):

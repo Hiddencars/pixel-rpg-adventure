@@ -27,9 +27,51 @@ from art import (T_CROPS, T_DEEP, T_DIRT, T_FLOOR, T_FOREST, T_GRASS, T_MEADOW,
                  T_MUD, T_PATH, T_ROCK, T_SAND, T_SHALLOW, T_SNOW, T_STONE,
                  T_VOID, T_WATER, TILE)
 
-MAP_W, MAP_H = 250, 128
-VILLAGE_CENTER = (125, 64)
-SPAWN_TILE = (125, 70)
+MAP_W, MAP_H = 800, 400          # площадь ×10: 320 000 тайлов
+SCALE = MAP_W / 250.0            # насколько вырос мир относительно 2.4
+VILLAGE_CENTER = (int(round(125 * SCALE)), int(round(64 * SCALE)))
+# спавн привязан к деревне, а не к масштабу: сама деревня не растягивается
+SPAWN_TILE = (VILLAGE_CENTER[0], VILLAGE_CENTER[1] + 6)
+
+
+def _sc(v: float | int) -> int:
+    """Масштабировать «старую» координату 250×128 под текущий размер."""
+    return int(round(v * MAP_W / 250.0))
+
+def _sc2(x, y):
+    return _sc(x), _sc(y)
+
+
+# Области мира как статические данные: quests.py берёт отсюда id, не строя мир.
+# Прямоугольники заданы в старой системе 250×128 и масштабируются при построении.
+_REGIONS_RAW = (
+    ("village",   "Дубрава",            "village",   (110, 52, 141, 77),   [], 1),
+    ("meadow",    "Луга",               "meadow",    (60, 40, 190, 92),    ["goblin", "slime", "chicken", "sheep", "cow", "boar"], 1),
+    ("forest",    "Тёмный бор",         "forest",    (2, 2, 120, 128),     ["goblin", "brute", "wolf", "spider", "boar", "bear", "snake"], 2),
+    ("swamp",     "Гнилая топь",        "swamp",     (2, 90, 120, 128),    ["slime", "snake", "spider", "troll", "imp"], 3),
+    ("highlands", "Кряж",               "highlands", (120, 2, 250, 46),    ["orc", "golem", "troll", "skeleton", "bat", "imp"], 4),
+    ("ruins",     "Руины Аргоса",       "ruins",     (196, 24, 240, 60),   ["skeleton", "wraith", "bandit", "golem"], 5),
+    ("graveyard", "Погост",             "graveyard", (180, 88, 220, 116),  ["skeleton", "wraith", "imp"], 4),
+    ("camp",      "Логово разбойников", "camp",      (44, 86, 84, 116),    ["bandit", "brute", "wolf"], 3),
+    ("shore",     "Берег",              "shore",     (2, 30, 60, 70),      ["goblin", "slime", "chicken"], 1),
+)
+
+REGION_IDS = frozenset(r[0] for r in _REGIONS_RAW)
+
+
+def _scaled_regions() -> list[dict]:
+    """Собирает список регионов с прямоугольниками, отмасштабированными под MAP."""
+    vx, vy = VILLAGE_CENTER
+    out = []
+    for (rid, name, _key, (rx0, ry0, rx1, ry1), mobs, level) in _REGIONS_RAW:
+        if rid == "village":
+            rect = (vx - 17, vy - 13, vx + 17, vy + 13)
+        else:
+            rect = (_sc(rx0), _sc(ry0), _sc(rx1), _sc(ry1))
+        out.append({"id": rid, "name": name, "rect": rect, "mobs": list(mobs), "level": level})
+    return out
+
+REGIONS_DEF = _scaled_regions()
 
 
 # ------------------------------------------------------------------- noise
@@ -70,11 +112,45 @@ class World:
         self.decor: list[dict] = []        # drawn under entities
         self.regions: list[dict] = []      # named areas used for spawning/quests
         self._generate()
+        self._index()
 
     # -- queries -----------------------------------------------------------
     @staticmethod
     def in_bounds(x: int, y: int) -> bool:
         return 0 <= x < MAP_W and 0 <= y < MAP_H
+
+    def _index(self) -> None:
+        """Пространственные индексы для декора и объектов: на карте 320 000
+        тайлов проход по списку из 50–100 тысяч элементов каждый кадр слишком
+        дорог, поэтому декорации/объекты раскладываются по корзинам 8×8 тайлов
+        и рендер обходит только корзины, попадающие в камеру."""
+        self.decor_buckets: dict[tuple[int, int], list[dict]] = {}
+        for d in self.decor:
+            key = (d["x"] // 8, d["y"] // 8)
+            self.decor_buckets.setdefault(key, []).append(d)
+        self.object_buckets: dict[tuple[int, int], list[dict]] = {}
+        for o in self.objects:
+            key = (o["x"] // 8, o["y"] // 8)
+            self.object_buckets.setdefault(key, []).append(o)
+
+    def decor_in_view(self, x0: int, y0: int, x1: int, y1: int) -> list[dict]:
+        """Декорации в прямоугольнике (в тайлах)."""
+        out: list[dict] = []
+        for by in range(y0 // 8 - 1, y1 // 8 + 2):
+            for bx in range(x0 // 8 - 1, x1 // 8 + 2):
+                bucket = self.decor_buckets.get((bx, by))
+                if bucket:
+                    out.extend(bucket)
+        return out
+
+    def objects_in_view(self, x0: int, y0: int, x1: int, y1: int) -> list[dict]:
+        out: list[dict] = []
+        for by in range(y0 // 8 - 1, y1 // 8 + 2):
+            for bx in range(x0 // 8 - 1, x1 // 8 + 2):
+                bucket = self.object_buckets.get((bx, by))
+                if bucket:
+                    out.extend(bucket)
+        return out
 
     def tile(self, x: int, y: int) -> int:
         if not self.in_bounds(x, y):
@@ -110,6 +186,14 @@ class World:
         return None
 
     def reachable_from(self, start: tuple[int, int]) -> set[tuple[int, int]]:
+        cache = getattr(self, "_reach_cache", None)
+        if cache is not None and cache[0] == start:
+            return cache[1]
+        result = self._reachable_bfs(start)
+        self._reach_cache = (start, result)
+        return result
+
+    def _reachable_bfs(self, start: tuple[int, int]) -> set[tuple[int, int]]:
         if not self.walkable(*start):
             found = self.nearest_walkable(*start)
             if not found:
@@ -204,17 +288,52 @@ class World:
                 self.solid.discard((x, y))
 
     # -- generation --------------------------------------------------------
+    def _field(self, freq: float, ox: float = 0.0, oy: float = 0.0,
+               step: int = 4) -> list[list[float]]:
+        """Гладкое поле шума: fbm считается на редкой сетке (шаг `step` тайлов)
+        и билинейно растягивается на всю карту.
+
+        fbm — гладкая функция: при частотах 0.03–0.09 потеря детализации на шаге 4
+        глазу не видна, а время генерации падает примерно в 16 раз. На карте в
+        320 000 тайлов это разница между «мир строится 16 секунд» и «за секунду»."""
+        gw = MAP_W // step + 2
+        gh = MAP_H // step + 2
+        grid = [[fbm(gx * step * freq + ox, gy * step * freq + oy)
+                 for gx in range(gw)] for gy in range(gh)]
+        out = [[0.0] * MAP_W for _ in range(MAP_H)]
+        inv = 1.0 / step
+        for y in range(MAP_H):
+            gy, ty = divmod(y * inv, 1.0)
+            gy = int(gy)
+            g0, g1 = grid[gy], grid[gy + 1]
+            row = out[y]
+            for x in range(MAP_W):
+                gx, tx = divmod(x * inv, 1.0)
+                i = int(gx)
+                a = g0[i] + (g0[i + 1] - g0[i]) * tx
+                b = g1[i] + (g1[i + 1] - g1[i]) * tx
+                row[x] = a + (b - a) * ty
+        return out
+
     def _generate(self) -> None:
         rng = self.rng
         cx, cy = MAP_W / 2, MAP_H / 2
+        # три гладких поля: рельеф, влажность, «лесность». Считаются на редкой сетке.
+        height_f = self._field(0.045)
+        moist_f = self._field(0.031, 90.5, 20.25)
+        forest_f = self._field(0.09, 5.5, 3.25)
+        half_w, half_h = MAP_W / 2, MAP_H / 2
         for y in range(MAP_H):
+            hf, mf = height_f[y], moist_f[y]
+            cold = y / MAP_H                    # north is cold
+            swamp_y = y > MAP_H * 0.72
+            row = self.tiles[y]
             for x in range(MAP_W):
-                dx = (x - cx) / (MAP_W / 2)
-                dy = (y - cy) / (MAP_H / 2)
+                dx = (x - cx) / half_w
+                dy = (y - cy) / half_h
                 dist = math.sqrt(dx * dx * 0.92 + dy * dy * 1.08)
-                height = fbm(x * 0.045, y * 0.045) * 0.62 + 0.38 - dist * 0.30
-                moist = fbm(x * 0.031 + 90.5, y * 0.031 + 20.25)
-                cold = (y / MAP_H)                      # north is cold
+                height = hf[x] * 0.62 + 0.38 - dist * 0.30
+                moist = mf[x]
                 if height > 0.60:
                     t = T_SNOW if cold < 0.16 else (T_ROCK if height > 0.70 else T_STONE)
                 elif height > 0.47:
@@ -230,15 +349,17 @@ class World:
                 else:
                     t = T_DEEP
                 # southern swamp
-                if t in (T_GRASS, T_MEADOW, T_FOREST) and y > MAP_H * 0.72 and moist > 0.46:
+                if t in (T_GRASS, T_MEADOW, T_FOREST) and swamp_y and moist > 0.46:
                     t = T_MUD
-                self.tiles[y][x] = t
+                row[x] = t
+        self.forest_f = forest_f
 
-        self._carve_lake(58, 38, 11)
-        self._carve_lake(196, 96, 7)
+        self._carve_lake(_sc(58), _sc(38), _sc(11))
+        self._carve_lake(_sc(196), _sc(96), _sc(7))
         self._build_village()
         self._roads()
         self._forests()
+        self._clear_village_trees()
         self._landmarks()
         self._beaches()
         self._scatter_decor()
@@ -322,14 +443,39 @@ class World:
                     self._deco(fx, y, "fence_v")
                     self.solid.add((fx, y))
 
+    def _clear_village_trees(self) -> None:
+        """Убрать деревья и камни из деревенского квадрата.
+
+        `_forests` сажает деревья и на деревенской траве (T_GRASS), поэтому без
+        этого прохода лес вырастает прямо между домами: NPC оказываются в кольце
+        из стволов, а игрок упирается в дерево посреди площади."""
+        vx, vy = VILLAGE_CENTER
+        pad_x, pad_y = 19, 14          # деревня не масштабируется: те же ±15/±11 плюс запас
+        x0, x1 = vx - pad_x, vx + pad_x
+        y0, y1 = vy - pad_y, vy + pad_y
+        trees = ("oak_big", "oak_big_b", "oak_big_c", "oak_small", "oak_small_b",
+                 "pine_big", "pine_big_b", "pine_small", "pine_small_b",
+                 "birch", "dead_tree", "rock_big", "rock_small")
+        keep = []
+        for o in self.objects:
+            if (x0 <= o["x"] <= x1 and y0 <= o["y"] <= y1
+                    and o["kind"] in trees):
+                self.solid.discard((o["x"], o["y"]))
+                continue
+            keep.append(o)
+        self.objects = keep
+
     def _roads(self) -> None:
         vx, vy = VILLAGE_CENTER
-        for (tx, ty) in ((36, 64), (60, 30), (212, 40), (196, 100), (60, 100),
-                         (206, 96), (125, 16), (150, 110), (30, 40)):
+        # цели дорог заданы в старой системе 250×128 и масштабируются под мир
+        for (tx, ty) in (_sc2(36, 64), _sc2(60, 30), _sc2(212, 40), _sc2(196, 100),
+                         _sc2(60, 100), _sc2(206, 96), _sc2(125, 16), _sc2(150, 110),
+                         _sc2(30, 40)):
             self._road(vx, vy, tx, ty)
 
     def _forests(self) -> None:
         rng = self.rng
+
         def tree_kind(r):
             roll = r.random()
             if roll < 0.45:
@@ -339,14 +485,18 @@ class World:
             if roll < 0.92:
                 return r.choice(("pine_big", "pine_big_b", "pine_small", "pine_small_b"))
             return "birch"
+
+        ffield = getattr(self, "forest_f", None)
         for y in range(2, MAP_H - 2):
+            row = self.tiles[y]
+            frow = ffield[y] if ffield else None
             for x in range(2, MAP_W - 2):
-                t = self.tiles[y][x]
+                t = row[x]
                 if t == T_FOREST:
                     if rng.random() < 0.55 and self._free(x, y):
                         self._place(x, y, tree_kind(rng))
                 elif t in (T_GRASS, T_MEADOW):
-                    n = fbm(x * 0.09 + 5.5, y * 0.09 + 3.25)
+                    n = frow[x] if frow else 0.0
                     if n > 0.56 and rng.random() < 0.28 and self._free(x, y):
                         self._place(x, y, tree_kind(rng))
                 elif t == T_MUD:
@@ -356,7 +506,7 @@ class World:
     def _landmarks(self) -> None:
         rng = self.rng
         # ancient ruins (north-east)
-        rx, ry = 212, 40
+        rx, ry = _sc(212), _sc(40)
         for i in range(5):
             self._place(rx - 6 + i * 3, ry - 2 + (i % 2) * 5, "pillar", solid=True)
         for i in range(4):
@@ -365,13 +515,13 @@ class World:
         self._place(rx + 5, ry + 3, "grave", solid=False)
         self._place(rx - 8, ry + 4, "grave", solid=False)
         # graveyard (south-east)
-        gx, gy = 196, 100
+        gx, gy = _sc(196), _sc(100)
         for i in range(12):
             self._place(gx - 8 + (i % 6) * 3, gy - 3 + (i // 6) * 5, "grave", solid=False)
             self.solid.add((gx - 8 + (i % 6) * 3, gy - 3 + (i // 6) * 5))
         self._place(gx, gy + 5, "pillar", solid=True)
         # bandit camp (south-west)
-        bx, by = 60, 100
+        bx, by = _sc(60), _sc(100)
         self._place(bx, by, "tent", solid=True, fw=2)
         self._place(bx + 6, by + 3, "tent", solid=True, fw=2)
         self._place(bx + 3, by + 1, "campfire", solid=False)
@@ -380,30 +530,35 @@ class World:
         for i in range(6):
             self._place(bx - 4 + i * 3, by - 4, "fence", solid=False)
         # lumber camp (west)
-        lx, ly = 36, 64
+        lx, ly = _sc(36), _sc(64)
         self._place(lx, ly, "tent", solid=True, fw=2)
         self._place(lx + 4, ly + 2, "log", solid=True)
         self._place(lx + 5, ly - 2, "stump", solid=False)
         self._place(lx - 2, ly + 3, "barrel", solid=True)
         # mountain pass (north)
-        self._place(125, 16, "cave", solid=True, fw=2)
-        self._place(120, 18, "rock_big", solid=True)
-        self._place(130, 18, "rock_big", solid=True)
+        mx, my = _sc(125), _sc(16)
+        self._place(mx, my, "cave", solid=True, fw=2)
+        self._place(mx - 5, my + 2, "rock_big", solid=True)
+        self._place(mx + 5, my + 2, "rock_big", solid=True)
         # lake hut
-        self._place(48, 34, "house_b", solid=True, fw=3, fh=2)
-        self._place(52, 36, "well", solid=True)
+        hx, hy = _sc(48), _sc(34)
+        self._place(hx, hy, "house_b", solid=True, fw=3, fh=2)
+        self._place(hx + 4, hy + 2, "well", solid=True)
         # beach camp (west shore)
-        self._place(30, 40, "tent", solid=True, fw=2)
-        self._place(33, 42, "campfire", solid=False)
+        tx_, ty_ = _sc(30), _sc(40)
+        self._place(tx_, ty_, "tent", solid=True, fw=2)
+        self._place(tx_ + 3, ty_ + 2, "campfire", solid=False)
         # east shore watchtower
-        self._place(206, 96, "pillar", solid=True)
-        self._place(210, 98, "ruin", solid=True, fw=2)
+        wx, wy = _sc(206), _sc(96)
+        self._place(wx, wy, "pillar", solid=True)
+        self._place(wx + 4, wy + 2, "ruin", solid=True, fw=2)
         # scatter rocks on stone / rock ground
-        self._scatter(180, ("rock_big", "rock_small"), (T_STONE, T_ROCK, T_SNOW))
-        self._scatter(90, ("stump", "log"), (T_GRASS, T_MEADOW, T_FOREST), solid=False)
+        # площадь выросла в 10 раз — и разброс камней/пней тоже
+        self._scatter(1800, ("rock_big", "rock_small"), (T_STONE, T_ROCK, T_SNOW))
+        self._scatter(900, ("stump", "log"), (T_GRASS, T_MEADOW, T_FOREST), solid=False)
         # a few caves in the highlands
-        for _ in range(3):
-            spot = self.random_walkable_in((10, 8, MAP_W - 10, 40), rng)
+        for _ in range(30):
+            spot = self.random_walkable_in((10, 8, MAP_W - 10, _sc(40)), rng)
             if spot:
                 self._place(spot[0], spot[1], "cave", solid=True, fw=2)
 
@@ -418,47 +573,43 @@ class World:
                             break
 
     def _scatter_decor(self) -> None:
+        """Плотный, но не забитый: травяные пучки, цветы, камни, ракушки,
+        камыш и грибы по биомам. Новые мелкие декали читаются как «живой пол»."""
         rng = self.rng
         for y in range(2, MAP_H - 2):
+            row = self.tiles[y]
             for x in range(2, MAP_W - 2):
-                t = self.tiles[y][x]
+                t = row[x]
                 r = rng.random()
                 if t in (T_GRASS, T_MEADOW):
+                    if r < 0.30:
+                        self._deco(x, y, "grass_tuft")
+                    elif r < 0.36:
+                        self._deco(x, y, "flower" if rng.random() < 0.6 else "flower2")
+                    elif r < 0.40:
+                        self._deco(x, y, "pebble")
+                    elif r < 0.45:
+                        self._deco(x, y, "bush" if rng.random() < 0.55 else "berry_bush")
+                    elif r < 0.47:
+                        self._deco(x, y, "rock_small")
+                elif t == T_FOREST:
+                    if r < 0.12:
+                        self._deco(x, y, "mushroom" if rng.random() < 0.3 else "grass_tuft")
+                    elif r < 0.16:
+                        self._deco(x, y, "bush" if rng.random() < 0.5 else "rock_small")
+                elif t == T_SAND:
+                    if r < 0.08:
+                        self._deco(x, y, "shell" if rng.random() < 0.5 else "pebble")
+                elif t == T_MUD:
                     if r < 0.10:
-                        self._deco(x, y, "flower" if rng.random() < 0.7 else "bush")
-                    elif r < 0.115:
-                        self._deco(x, y, "berry_bush" if rng.random() < 0.5 else "rock_small")
-                    elif r < 0.12:
-                        self._deco(x, y, "stump")
-                elif t == T_FOREST and r < 0.09:
-                    self._deco(x, y, "bush" if rng.random() < 0.6 else "rock_small")
-                elif t == T_SAND and r < 0.02:
-                    self._deco(x, y, "rock_small")
-                elif t == T_MUD and r < 0.06:
-                    self._deco(x, y, "bush")
+                        self._deco(x, y, "reed" if rng.random() < 0.5 else "mushroom")
+                elif t == T_ROCK or t == T_STONE:
+                    if r < 0.05:
+                        self._deco(x, y, "pebble")
 
     def _define_regions(self) -> None:
-        self.regions = [
-            {"id": "village", "name": "Дубрава", "rect": (110, 52, 141, 77),
-             "mobs": [], "level": 1},
-            {"id": "meadow", "name": "Луга", "rect": (60, 40, 190, 92),
-             "mobs": ["goblin", "slime", "chicken", "sheep", "cow", "boar"], "level": 1},
-            {"id": "forest", "name": "Тёмный бор", "rect": (2, 2, 120, 128),
-             "mobs": ["goblin", "brute", "wolf", "spider", "boar", "bear", "snake"], "level": 2},
-            {"id": "swamp", "name": "Гнилая топь", "rect": (2, 90, 120, 128),
-             "mobs": ["slime", "snake", "spider", "troll", "imp"], "level": 3},
-            {"id": "highlands", "name": "Кряж", "rect": (120, 2, 250, 46),
-             "mobs": ["orc", "golem", "troll", "skeleton", "bat", "imp"], "level": 4},
-            {"id": "ruins", "name": "Руины Аргоса", "rect": (196, 24, 240, 60),
-             "mobs": ["skeleton", "wraith", "bandit", "golem"], "level": 5},
-            {"id": "graveyard", "name": "Погост", "rect": (180, 88, 220, 116),
-             "mobs": ["skeleton", "wraith", "imp"], "level": 4},
-            {"id": "camp", "name": "Логово разбойников", "rect": (44, 86, 84, 116),
-             "mobs": ["bandit", "brute", "wolf"], "level": 3},
-            {"id": "shore", "name": "Берег", "rect": (2, 30, 60, 70),
-             "mobs": ["goblin", "slime", "chicken"], "level": 1},
-        ]
-
+        """Копия модульной REGIONS_DEF — чтобы экземпляр мог менять rect и т.п."""
+        self.regions = [dict(r) for r in REGIONS_DEF]
 
 def rng_bool(seed_val: int) -> bool:
     return (abs(seed_val) // 3) % 2 == 0

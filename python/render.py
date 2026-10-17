@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.5.
+"""Rendering, UI screens and the main loop for Pixel patch 2.6.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -474,7 +474,13 @@ class Renderer:
         return self._bush_surfs[idx]
 
     def _build_minimap(self) -> pygame.Surface:
-        """Pre-render the whole island once; the HUD draws a marker on top."""
+        """Pre-render the whole island once; the HUD draws a marker on top.
+
+        Кэш висит на мире: selftest строит рендерер на каждое разрешение, и без
+        этого карта в 320 000 тайлов пеклась бы заново пять раз."""
+        cached = getattr(self.game.world, "_minimap", None)
+        if cached is not None:
+            return cached
         w = W.MAP_W * 2
         h = W.MAP_H * 2
         surf = pygame.Surface((w, h))
@@ -495,6 +501,7 @@ class Renderer:
         for o in self.game.world.objects:
             if o["kind"].startswith("house"):
                 surf.fill((120, 60, 50), (o["x"] * 2, o["y"] * 2, 6, 4))
+        self.game.world._minimap = surf
         return surf
 
     # --------------------------------------------------------------- helpers
@@ -597,7 +604,79 @@ class Renderer:
                           enabled=bool(g.settings.get("atmosphere", True)))
 
     # ----------------------------------------------------------------- tiles
+    # Семьи тайлов: стык внутри семьи не затеняем, стык между семьями — затеняем.
+    TILE_FAMILY = {
+        art.T_GRASS: "grass", art.T_MEADOW: "grass", art.T_FOREST: "grass",
+        art.T_SAND: "sand", art.T_PATH: "path", art.T_DIRT: "path",
+        art.T_STONE: "rock", art.T_ROCK: "rock", art.T_SNOW: "snow",
+        art.T_MUD: "mud", art.T_CROPS: "crops", art.T_FLOOR: "floor",
+        art.T_SHALLOW: "water", art.T_WATER: "water", art.T_DEEP: "water",
+        art.T_VOID: "void",
+    }
+
+    def _build_edge_strips(self) -> None:
+        """Мягкая тень вдоль стыка разных земель: убирает «жёсткие прямоугольники»."""
+        if getattr(self, "_edge_strips", None) is not None:
+            return
+        n = 10
+        strips = {}
+        for side in ("n", "s", "w", "e"):
+            if side in ("n", "s"):
+                surf = pygame.Surface((TILE, n), pygame.SRCALPHA)
+                for i in range(n):
+                    a = int(78 * (1.0 - i / n) ** 1.7)
+                    pygame.draw.line(surf, (8, 12, 18, a), (0, i), (TILE, i))
+                if side == "s":
+                    surf = pygame.transform.flip(surf, False, True)
+            else:
+                surf = pygame.Surface((n, TILE), pygame.SRCALPHA)
+                for i in range(n):
+                    a = int(78 * (1.0 - i / n) ** 1.7)
+                    pygame.draw.line(surf, (8, 12, 18, a), (i, 0), (i, TILE))
+                if side == "e":
+                    surf = pygame.transform.flip(surf, True, False)
+            strips[side] = surf
+        self._edge_strips = strips
+        self._ao_tiles = {}
+
+    def _tile_surface(self, ttype: int, tx: int, ty: int, wave: int) -> pygame.Surface:
+        """Тайл с затенёнными стыками; собирается лениво и кэшируется."""
+        frames = self.tiles[ttype]
+        if ttype in art.WATER_TILES:
+            idx = (wave + tx // 3 + ty // 4) % len(frames)
+        else:
+            idx = (tx * 7 + ty * 13 + (tx * ty) % 3) % len(frames)
+        w = self.game.world
+        fam = self.TILE_FAMILY.get(ttype, "grass")
+        mask = 0
+        if ty > 0 and self.TILE_FAMILY.get(w.tiles[ty - 1][tx]) != fam:
+            mask |= 1
+        if tx + 1 < W.MAP_W and self.TILE_FAMILY.get(w.tiles[ty][tx + 1]) != fam:
+            mask |= 2
+        if ty + 1 < W.MAP_H and self.TILE_FAMILY.get(w.tiles[ty + 1][tx]) != fam:
+            mask |= 4
+        if tx > 0 and self.TILE_FAMILY.get(w.tiles[ty][tx - 1]) != fam:
+            mask |= 8
+        if not mask:
+            return frames[idx]
+        key = (ttype, mask, idx)
+        surf = self._ao_tiles.get(key)
+        if surf is None:
+            surf = frames[idx].copy()
+            s_ = self._edge_strips
+            if mask & 1:
+                surf.blit(s_["n"], (0, 0))
+            if mask & 4:
+                surf.blit(s_["s"], (0, TILE - s_["s"].get_height()))
+            if mask & 8:
+                surf.blit(s_["w"], (0, 0))
+            if mask & 2:
+                surf.blit(s_["e"], (TILE - s_["e"].get_width(), 0))
+            self._ao_tiles[key] = surf
+        return surf
+
     def draw_tiles(self, cam_x: float, cam_y: float) -> None:
+        self._build_edge_strips()
         w = self.game.world
         x0, y0 = int(cam_x), int(cam_y)
         wave = self.game.frame // 14
@@ -608,19 +687,14 @@ class Renderer:
             for tx in range(x0 - 2, x0 + int(self.view_w) + 3):
                 if not (0 <= tx < W.MAP_W):
                     continue
-                ttype = row[tx]
-                frames = self.tiles[ttype]
-                idx = (tx * 7 + ty * 13) % len(frames)
-                if ttype in art.WATER_TILES:
-                    idx = (wave + tx // 3 + ty // 4) % len(frames)
-                self.logical.blit(frames[idx], ((tx - cam_x) * TILE, (ty - cam_y) * TILE))
+                self.logical.blit(self._tile_surface(row[tx], tx, ty, wave),
+                                  ((tx - cam_x) * TILE, (ty - cam_y) * TILE))
 
     def draw_decor(self, cam_x: float, cam_y: float) -> None:
         s = self.logical
-        for d in self.game.world.decor:
-            if not (cam_x - 1.5 < d["x"] < cam_x + self.view_w + 1.5
-                    and cam_y - 1.5 < d["y"] < cam_y + self.view_h + 2):
-                continue
+        for d in self.game.world.decor_in_view(int(cam_x), int(cam_y),
+                                               int(cam_x + self.view_w),
+                                               int(cam_y + self.view_h)):
             px, py = (d["x"] - cam_x) * TILE, (d["y"] - cam_y) * TILE
             kind = d["kind"]
             if kind == "flower":
@@ -643,6 +717,7 @@ class Renderer:
                     surf = data["surface"]
                     ax, ay = data["anchor"]
                     s.blit(surf, (px + TILE / 2 - ax, py + TILE - ay))
+
 
     def draw_corpses(self, cam_x: float, cam_y: float) -> None:
         for c in self.game.corpses:
@@ -670,11 +745,11 @@ class Renderer:
                                     len(g.available_quests(n.get("kind", ""))))
                 for n in g.npcs if n.get("kind")}
         items: list[tuple[float, Callable[[], None]]] = []
-        for o in g.world.objects:
-            if not (cam_x - 4 < o["x"] < cam_x + self.view_w + 4
-                    and cam_y - 5 < o["y"] < cam_y + self.view_h + 5):
-                continue
+        for o in self.game.world.objects_in_view(int(cam_x), int(cam_y),
+                                                 int(cam_x + self.view_w),
+                                                 int(cam_y + self.view_h)):
             items.append((o["y"] + 0.5, lambda o=o: self.draw_object(o, cam_x, cam_y)))
+
         for d in g.drops:
             items.append((d["y"], lambda d=d: self.draw_drop(d, cam_x, cam_y)))
         for n in g.npcs:
@@ -1006,7 +1081,7 @@ class Renderer:
         st = g.stats()
         w = S(340)
         self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.text(self.font_big, "Pixel patch 2.5", True,
+        screen.blit(self.text(self.font_big, "Pixel patch 2.6", True,
                                          (250, 246, 226)), (S(20), S(14)))
         screen.blit(self.text(self.font_small, 
             f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
@@ -2032,7 +2107,7 @@ class Renderer:
         if note:
             n = self.text(self.font_small, note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.text(self.font_small, "Pixel patch — версия 2.5", True,
+        ver = self.text(self.font_small, "Pixel patch — версия 2.6", True,
                                      (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
@@ -2160,7 +2235,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.5")
+    pygame.display.set_caption("Pixel patch 2.6")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

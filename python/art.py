@@ -21,11 +21,12 @@ from __future__ import annotations
 
 import math
 import random
+from pathlib import Path
 
 import pygame
 
 TILE = 32
-VARIANTS = 5
+VARIANTS = 10
 
 # ---------------------------------------------------------------- tile types
 T_VOID, T_DEEP, T_WATER, T_SHALLOW, T_SAND = 0, 1, 2, 3, 4
@@ -408,7 +409,6 @@ WATER_PHASES = 3
 
 _tiles_cache: dict[int, list[pygame.Surface]] | None = None
 
-
 def build_tiles() -> dict[int, list[pygame.Surface]]:
     global _tiles_cache
     if _tiles_cache is not None:
@@ -664,6 +664,78 @@ def _obj_stump(rng: random.Random) -> pygame.Surface:
     pygame.draw.ellipse(s, WOOD, (9, 8, 16, 7))
     pygame.draw.ellipse(s, mix(WOOD, WOOD_D, 0.4), (12, 10, 10, 4))
     _px(s, 17, 12, WOOD_D)
+    return s
+
+
+def _obj_grass_tuft(rng: random.Random) -> pygame.Surface:
+    w, h = 18, 16
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 40), (2, h - 4, 14, 4))
+    base = rng.choice(((64, 118, 56), (84, 142, 66), (52, 104, 52)))
+    for i in range(5):
+        x = 4 + i * 2 + rng.randrange(-1, 2)
+        ln = 5 + rng.randrange(0, 4)
+        col = mix(base, (140, 186, 88), i / 5)
+        _rect(s, col, x, h - 6 - ln, 2, ln)
+    return s
+
+
+def _obj_flower2(rng: random.Random) -> pygame.Surface:
+    w, h = 14, 16
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 45), (2, h - 3, 10, 3))
+    _rect(s, (66, 122, 62), 6, 8, 2, 6)
+    col = rng.choice(((118, 92, 200), (208, 120, 160), (240, 200, 120)))
+    for k in range(5):
+        a = k / 5 * math.tau
+        _px(s, 7 + int(math.cos(a) * 4.2), 5 + int(math.sin(a) * 3.4), col)
+    _px(s, 7, 5, (255, 236, 180))
+    return s
+
+
+def _obj_pebble(rng: random.Random) -> pygame.Surface:
+    w, h = 16, 12
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 40), (2, h - 3, 12, 3))
+    col = rng.choice(((150, 152, 158), (142, 138, 130), (132, 136, 146)))
+    pygame.draw.ellipse(s, col, (2, 1, 12, 8))
+    pygame.draw.ellipse(s, mix(col, (210, 212, 218), 0.5), (4, 1, 5, 3))
+    return s
+
+
+def _obj_shell(rng: random.Random) -> pygame.Surface:
+    w, h = 14, 12
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 40), (1, h - 3, 12, 3))
+    col = rng.choice(((238, 214, 180), (226, 200, 168), (214, 188, 158)))
+    pygame.draw.ellipse(s, col, (2, 1, 10, 8))
+    pygame.draw.line(s, mix(col, (150, 120, 96), 0.5), (4, 3), (11, 6), 1)
+    pygame.draw.line(s, mix(col, (150, 120, 96), 0.5), (5, 5), (10, 7), 1)
+    _px(s, 4, 2, mix(col, (255, 250, 230), 0.6))
+    return s
+
+
+def _obj_reed(rng: random.Random) -> pygame.Surface:
+    w, h = 14, 24
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 40), (2, h - 4, 10, 4))
+    _rect(s, (60, 108, 58), 6, 8, 2, h - 12)
+    _px(s, 6, 5, (108, 78, 46))
+    _rect(s, (126, 92, 56), 5, 2, 4, 7)
+    _px(s, 5, 3, mix((126, 92, 56), (206, 168, 116), 0.5))
+    return s
+
+
+def _obj_mushroom(rng: random.Random) -> pygame.Surface:
+    w, h = 16, 16
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 45), (2, h - 3, 12, 3))
+    _rect(s, (224, 220, 206), 7, 7, 3, 6)
+    cap = rng.choice(((196, 58, 52), (168, 96, 54), (150, 60, 130)))
+    pygame.draw.ellipse(s, cap, (1, 2, 14, 9))
+    _px(s, 5, 3, (255, 240, 240))
+    _px(s, 9, 4, (255, 240, 240))
+    _px(s, 3, 6, (255, 240, 240))
     return s
 
 
@@ -1035,7 +1107,13 @@ _OBJECT_BUILDERS = {
     "birch": _obj_birch,
     "dead_tree": _obj_dead_tree,
     "bush": lambda r: _obj_bush(r, False),
-    "berry_bush": lambda r: _obj_bush(r, True),
+        "berry_bush": lambda r: _obj_bush(r, True),
+        "grass_tuft": _obj_grass_tuft,
+        "flower2": _obj_flower2,
+        "pebble": _obj_pebble,
+        "shell": _obj_shell,
+        "reed": _obj_reed,
+        "mushroom": _obj_mushroom,
     "rock_big": lambda r: _obj_rock(True, r),
     "rock_small": lambda r: _obj_rock(False, r),
     "stump": _obj_stump,
@@ -1075,6 +1153,8 @@ OBJECT_META = {
     "pine_big": (1, 1), "pine_big_b": (1, 1), "pine_small": (1, 1),
     "pine_small_b": (1, 1), "birch": (1, 1), "dead_tree": (1, 1),
     "bush": (1, 1), "berry_bush": (1, 1),
+    "grass_tuft": (1, 1), "flower2": (1, 1), "pebble": (1, 1),
+    "shell": (1, 1), "reed": (1, 1), "mushroom": (1, 1),
     "rock_big": (1, 1), "rock_small": (1, 1), "stump": (1, 1), "log": (1, 1),
     "fence": (1, 1), "fence_v": (1, 1), "well": (1, 1), "barrel": (1, 1),
     "crate": (1, 1), "lamp": (1, 1), "signpost": (1, 1), "haystack": (1, 1),
