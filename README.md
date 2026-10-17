@@ -8,6 +8,12 @@
 | **2.5** (активная) | Python + pygame-ce, сборка в `.exe` | `python/game.py` или `PixelPatch.exe` |
 | **1.0** | HTML + p5.js | `index.html` в браузере |
 
+## Скриншоты
+
+![Дубрава днём](docs/screenshot-day.png)
+
+![Та же деревня ночью: свет костров, фонарей и окон](docs/screenshot-night.png)
+
 ## Играть
 
 **Скачать `.exe`:** вкладка [Releases](../../releases) → `PixelPatch.exe` (Windows,
