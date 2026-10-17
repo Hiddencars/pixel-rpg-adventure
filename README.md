@@ -14,6 +14,8 @@
 
 ![Та же деревня ночью: свет костров, фонарей и окон](docs/screenshot-night.png)
 
+![Дикие земли: плотный декор и мягкие стыки биомов](docs/screenshot-wilds.png)
+
 ## Играть
 
 **Скачать `.exe`:** вкладка [Releases](../../releases) → `PixelPatch.exe` (Windows,
