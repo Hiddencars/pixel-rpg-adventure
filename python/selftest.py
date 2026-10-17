@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel RPG 2.1 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel RPG 2.2 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -342,6 +342,53 @@ def _body() -> int:
     game.music.stop()
     print(f"music: {len(MUS.TRACKS)} tracks, region -> {region_track}, "
           f"battle theme on combat, toggling works")
+
+    # ------------------------------------------------------------ settings
+    cfg_path = G.CONFIG_PATH
+    backup = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else None
+    game.settings = dict(G.DEFAULT_SETTINGS)
+    game.keys = dict(G.DEFAULT_KEYS)
+    game.set_setting("sfx_volume", 0.5)
+    check(abs(game.settings["sfx_volume"] - 0.5) < 1e-6, "sfx volume not applied")
+    game.cycle_setting("difficulty", 1)
+    check(game.settings["difficulty"] == 2, "difficulty did not step up")
+    game.cycle_setting("difficulty", -5)
+    check(game.settings["difficulty"] == 0, "difficulty did not clamp at the low end")
+    base = game.incoming_damage(100)
+    check(abs(base - 65) < 1e-6, f"easy difficulty damage wrong: {base}")
+    game.set_setting("difficulty", 1)
+    check(abs(game.incoming_damage(100) - 100) < 1e-6, "normal difficulty damage wrong")
+    game.cycle_setting("muted")
+    check(game.settings["muted"] is True, "mute toggle failed")
+    game.cycle_setting("muted")
+    # rebinding: the old key of the target action is swapped, never duplicated
+    old_attack = game.keys["attack"]
+    game.bind_key("attack", pygame.K_f)
+    check(game.keys["attack"] == pygame.K_f, "attack was not rebound")
+    check(len(set(game.keys.values())) == len(game.keys), "two actions share one key")
+    game.keys = dict(G.DEFAULT_KEYS)
+    check(game.keys["attack"] == old_attack, "default keys were not restored")
+    # every tab must produce rows, and the screen must actually draw something
+    tabs = [t for t, _lbl in G.Game.SETTINGS_TABS]
+    check(len(tabs) >= 4, "fewer than four settings tabs")
+    for tab in tabs:
+        rows = game.settings_rows(tab, 2, False)
+        check(len(rows) >= 3, f"settings tab {tab} has only {len(rows)} rows")
+    surf_plain = pygame.Surface((1920, 1080))
+    surf_plain.fill((0, 0, 0))
+    ren = R.Renderer(game, 1920, 1080, 2)
+    ren.draw_settings(surf_plain, "sound", 0, 2, False)
+    lit = sum(1 for x in range(0, 1920, 23) for y in range(0, 1080, 23)
+              if surf_plain.get_at((x, y))[:3] != (0, 0, 0))
+    print(f"settings: {len(tabs)} tabs, {sum(len(game.settings_rows(t, 2, False)) for t in tabs)}"
+          f" rows, screen draws ({lit} lit samples)")
+    check(lit > 100, "the settings screen looks blank")
+    if backup is None:
+        cfg_path.unlink(missing_ok=True)
+    else:
+        cfg_path.write_text(backup, encoding="utf-8")
+    game.settings = dict(G.DEFAULT_SETTINGS)
+    game.keys = dict(G.DEFAULT_KEYS)
 
     # --------------------------------------------------------------- overlays
     overlays = ("inventory", "skilltree", "shop", "quests")

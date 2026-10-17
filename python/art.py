@@ -453,19 +453,19 @@ def _outline(surf: pygame.Surface, col=(30, 24, 28), strength: float = 0.65,
 def _canopy(surf, cx, cy, r, palette, rng, lobes=7) -> None:
     """Round leafy crown: dark back mass, mid lobes, lit top-left, rim shadow."""
     dark, mid, light, xlight = palette
-    deepest = shade(dark, 0.72)
+    deepest = shade(dark, 0.84)
     _disc(surf, deepest, cx, cy + r * 0.12, r)                 # back mass
     for i in range(lobes):
         a = i / lobes * math.tau
         lx = cx + math.cos(a) * r * 0.58
         ly = cy + math.sin(a) * r * 0.52
-        _disc(surf, dark, lx, ly, r * 0.6)
+        _disc(surf, dark, lx, ly, r * 0.62)
     for i in range(lobes):
         a = i / lobes * math.tau - 0.4
         lx = cx + math.cos(a) * r * 0.42
         ly = cy + math.sin(a) * r * 0.38 - r * 0.08
-        _disc(surf, mid, lx, ly, r * 0.55)
-    _disc(surf, mid, cx, cy - r * 0.08, r * 0.72)
+        _disc(surf, mid, lx, ly, r * 0.58)
+    _disc(surf, mid, cx, cy - r * 0.08, r * 0.80)
     _disc(surf, light, cx - r * 0.34, cy - r * 0.38, r * 0.46)  # lit top-left
     _disc(surf, light, cx + r * 0.22, cy - r * 0.30, r * 0.30)
     _disc(surf, xlight, cx - r * 0.40, cy - r * 0.48, r * 0.24)
@@ -501,72 +501,105 @@ def _trunk(surf, x, base_y, top_y, w, rng) -> None:
 
 
 def _obj_oak(big: bool, rng: random.Random, tint=0) -> pygame.Surface:
-    scale = 1.0 if big else 0.72
-    w, h = int(96 * scale), int(112 * scale)
+    """A broad oak. The canvas is sized from the crown, so nothing is ever clipped,
+    and the trunk is only ~1 tile tall: the visible trunk stays inside the tile that
+    actually blocks movement, which is what makes the collision feel right."""
+    if big:
+        w, h = 116, 136
+        trunk_w, trunk_top = 15, h - 30
+        crown = (w // 2, 58, 42)
+        sides = ((27, 82, 21), (88, 80, 20))
+        lobes = 10
+    else:
+        w, h = 86, 102
+        trunk_w, trunk_top = 12, h - 26
+        crown = (w // 2, 44, 30)
+        sides = ((22, 62, 15), (65, 60, 14))
+        lobes = 7
     s = pygame.Surface((w, h), pygame.SRCALPHA)
     palettes = ((LEAF_D, LEAF, LEAF_L, LEAF_XL),
                 ((30, 78, 50), (52, 112, 62), (86, 150, 74), (128, 184, 96)),
                 ((42, 88, 44), (66, 128, 54), (104, 168, 72), (150, 200, 104)))
     pal = palettes[tint % len(palettes)]
-    base_y = h - 6
-    pygame.draw.ellipse(s, (0, 0, 0, 70), (w * 0.12, base_y - 4, w * 0.76, 12 * scale))
-    trunk_w = max(6, int(12 * scale))
-    trunk_top = int(h * 0.42)
+    base_y = h - 4
+    # contact shadow, then roots and the trunk itself
+    pygame.draw.ellipse(s, (0, 0, 0, 78), (w * 0.14, base_y - 7, w * 0.72, 13))
+    for dx in (-3, -2, trunk_w + 1, trunk_w + 2):
+        _rect(s, BARK_D, w // 2 - trunk_w // 2 + dx, base_y - 5, 2, 5)
     _trunk(s, w // 2 - trunk_w // 2, base_y, trunk_top, trunk_w, rng)
-    # two forks
-    _rect(s, BARK_D, w // 2 - trunk_w // 2 - 7, trunk_top + 6, 6, 14)
-    _rect(s, BARK_D, w // 2 + trunk_w // 2 + 1, trunk_top + 2, 6, 16)
-    _canopy(s, w // 2, int(h * 0.30), int(w * 0.46), pal, rng, lobes=9 if big else 7)
-    if big:
-        _canopy(s, int(w * 0.22), int(h * 0.44), int(w * 0.24), pal, rng, lobes=5)
-        _canopy(s, int(w * 0.78), int(h * 0.42), int(w * 0.23), pal, rng, lobes=5)
+    # two forks climbing into the crown
+    fork_y = trunk_top + 6
+    for sx, dy, ln in ((-1, 2, 16), (1, -2, 18)):
+        x0 = w // 2 + sx * (trunk_w // 2 - 1)
+        for k in range(ln):
+            _rect(s, BARK_D if k % 3 else BARK, x0 + sx * k, fork_y + dy - k, 4, 3)
+    # crown: side masses first, then the main one on top
+    for (cx, cy, r) in sides:
+        _canopy(s, cx, cy, r, pal, rng, lobes=5)
+    _canopy(s, crown[0], crown[1], crown[2], pal, rng, lobes=lobes)
+    # a few leaves hanging below the crown so it does not read as a flat disc
+    for _ in range(7 if big else 5):
+        lx = crown[0] + rng.uniform(-crown[2] * 0.7, crown[2] * 0.7)
+        ly = crown[1] + crown[2] * 0.85 + rng.uniform(0, 6)
+        _disc(s, pal[0], lx, ly, rng.randint(2, 4))
+        _disc(s, pal[1], lx - 1, ly - 1, rng.randint(1, 2))
     return s
 
 
 def _obj_pine(big: bool, rng: random.Random, tint=0) -> pygame.Surface:
-    scale = 1.0 if big else 0.7
-    w, h = int(80 * scale), int(132 * scale)
+    """A spruce: stacked tiers that taper to a point, all inside the canvas."""
+    if big:
+        w, h = 92, 142
+        trunk_w, trunk_top = 11, h - 34
+        tiers, base_half, apex_y = 5, 36, 16
+    else:
+        w, h = 68, 106
+        trunk_w, trunk_top = 8, h - 26
+        tiers, base_half, apex_y = 4, 26, 12
     s = pygame.Surface((w, h), pygame.SRCALPHA)
     pals = ((PINE_D, PINE, PINE_L), ((22, 62, 50), (34, 84, 62), (54, 112, 76)),
             ((34, 80, 48), (48, 106, 56), (74, 138, 74)))
     dark, mid, light = pals[tint % len(pals)]
-    base_y = h - 6
-    pygame.draw.ellipse(s, (0, 0, 0, 70), (w * 0.18, base_y - 4, w * 0.64, 11 * scale))
-    trunk_w = max(5, int(9 * scale))
-    _trunk(s, w // 2 - trunk_w // 2, base_y, int(h * 0.66), trunk_w, rng)
-    tiers = 4 if big else 3
+    base_y = h - 4
+    pygame.draw.ellipse(s, (0, 0, 0, 78), (w * 0.18, base_y - 7, w * 0.64, 12))
+    _trunk(s, w // 2 - trunk_w // 2, base_y, trunk_top, trunk_w, rng)
+    top_y = trunk_top + 4
+    span = top_y - apex_y
     for i in range(tiers):
         t = i / max(1, tiers - 1)
-        y = int(h * (0.70 - 0.58 * t))
-        half = int(w * (0.42 - 0.24 * t))
-        height = int(h * 0.22)
-        pts = [(w // 2, y - height), (w // 2 - half, y + 6), (w // 2 + half, y + 6)]
-        pygame.draw.polygon(s, dark if i < 2 else mid, pts)
-        inner = [(w // 2, y - height + 5), (w // 2 - half + 6, y + 3),
-                 (w // 2 + half - 6, y + 3)]
-        pygame.draw.polygon(s, mid if i < 2 else light, inner)
-        pygame.draw.line(s, light, (w // 2, y - height + 4), (w // 2 - half + 8, y + 1))
-    for _ in range(10):                       # snow/needle speckles
-        _px(s, rng.randrange(w), rng.randrange(int(h * 0.2), int(h * 0.8)), light)
+        y = int(top_y - span * 0.86 * t)
+        half = int(base_half * (1.0 - 0.72 * t))
+        height = int(span * 0.30)
+        pts = [(w // 2, y - height), (w // 2 - half, y), (w // 2 + half, y)]
+        pygame.draw.polygon(s, dark, pts)
+        pygame.draw.polygon(s, mid, [(w // 2, y - height + 4), (w // 2 - half + 5, y - 1),
+                                     (w // 2 + half - 5, y - 1)])
+        pygame.draw.line(s, light, (w // 2, y - height + 3),
+                         (w // 2 - half + 7, y - 2), 1)
+        pygame.draw.line(s, dark, (w // 2 + 2, y - 1), (w // 2 + half - 3, y - 1), 1)
+    for _ in range(12):                       # snow and needle speckles
+        _px(s, rng.randrange(2, w - 2), rng.randrange(apex_y, trunk_top), light)
     return s
 
 
 def _obj_birch(rng: random.Random) -> pygame.Surface:
-    w, h = 64, 104
+    w, h = 72, 112
     s = pygame.Surface((w, h), pygame.SRCALPHA)
-    base_y = h - 6
-    pygame.draw.ellipse(s, (0, 0, 0, 65), (10, base_y - 4, 44, 10))
-    _rect(s, (198, 194, 180), w // 2 - 3, 34, 7, base_y - 34)
-    _rect(s, (232, 230, 222), w // 2 - 3, 34, 3, base_y - 34)
+    base_y = h - 4
+    pal = ((78, 128, 62), (110, 162, 78), (150, 194, 96), (188, 216, 128))
+    pygame.draw.ellipse(s, (0, 0, 0, 72), (16, base_y - 7, 40, 11))
+    trunk_top = 58                              # up into the crown, not a floating stub
+    _rect(s, (198, 194, 180), w // 2 - 3, trunk_top, 7, base_y - trunk_top)
+    _rect(s, (232, 230, 222), w // 2 - 3, trunk_top, 3, base_y - trunk_top)
     for _ in range(9):                        # birch markings
-        y = rng.randrange(38, base_y)
+        y = rng.randrange(trunk_top + 3, base_y)
         _rect(s, (74, 70, 62), w // 2 - 3, y, rng.randint(2, 5), 1)
-    _canopy(s, w // 2, 30, 22, ((78, 128, 62), (110, 162, 78), (150, 194, 96),
-                                (188, 216, 128)), rng, lobes=6)
-    _canopy(s, 14, 44, 13, ((78, 128, 62), (110, 162, 78), (150, 194, 96),
-                            (188, 216, 128)), rng, lobes=4)
-    _canopy(s, 50, 42, 12, ((78, 128, 62), (110, 162, 78), (150, 194, 96),
-                            (188, 216, 128)), rng, lobes=4)
+    for sx in (-1, 1):                        # two thin branches into the lobes
+        for k in range(10):
+            _rect(s, (198, 194, 180), w // 2 + sx * (3 + k), trunk_top + 6 - k, 2, 2)
+    _canopy(s, 18, 52, 16, pal, rng, lobes=5)
+    _canopy(s, 54, 50, 15, pal, rng, lobes=5)
+    _canopy(s, w // 2, 32, 24, pal, rng, lobes=7)
     return s
 
 
@@ -728,29 +761,30 @@ def _obj_lamp(rng: random.Random) -> pygame.Surface:
 
 
 def _obj_signpost(rng: random.Random) -> pygame.Surface:
-    w, h = 34, 46
+    w, h = 42, 46
     s = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.ellipse(s, (0, 0, 0, 55), (12, h - 7, 12, 5))
-    _rect(s, WOOD_D, 16, 10, 4, h - 14)
-    _rect(s, WOOD, 12, 6, 22, 12)
-    _rect(s, WOOD_L, 12, 6, 22, 1)
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (14, h - 7, 12, 5))
+    _rect(s, WOOD_D, 19, 10, 4, h - 14)
+    _rect(s, WOOD, 6, 6, 28, 12)
+    _rect(s, WOOD_L, 6, 6, 28, 1)
+    _rect(s, WOOD_D, 6, 17, 28, 1)
     for y in (9, 12, 15):
-        _rect(s, WOOD_D, 14, y, 18, 1)
-    pygame.draw.line(s, WOOD_D, (32, 6), (36, 12), 2)
-    pygame.draw.line(s, WOOD_D, (32, 18), (36, 12), 2)
+        _rect(s, WOOD_D, 9, y, 20, 1)
+    pygame.draw.polygon(s, WOOD, [(34, 5), (40, 12), (34, 19)])
+    pygame.draw.polygon(s, WOOD_L, [(34, 6), (38, 12), (34, 13)])
     return s
 
 
 def _obj_haystack(rng: random.Random) -> pygame.Surface:
-    w, h = 44, 40
+    w, h = 48, 42
     s = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.ellipse(s, (0, 0, 0, 55), (5, h - 8, 34, 6))
-    pygame.draw.polygon(s, (168, 142, 66), [(22, 4), (40, h - 8), (4, h - 8)])
-    pygame.draw.polygon(s, (200, 174, 88), [(22, 8), (34, h - 9), (10, h - 9)])
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (7, h - 8, 34, 6))
+    pygame.draw.polygon(s, (168, 142, 66), [(24, 4), (42, h - 8), (6, h - 8)])
+    pygame.draw.polygon(s, (200, 174, 88), [(24, 8), (36, h - 9), (12, h - 9)])
     for _ in range(26):
-        x, y = rng.randrange(6, 38), rng.randrange(10, h - 8)
+        x, y = rng.randrange(8, 40), rng.randrange(10, h - 8)
         _rect(s, (222, 198, 118) if rng.random() < 0.5 else (150, 126, 58), x, y, 3, 1)
-    _rect(s, (120, 96, 44), 0, h - 9, w, 2)
+    _rect(s, (120, 96, 44), 8, h - 9, w - 16, 2)
     return s
 
 
@@ -817,12 +851,12 @@ def _obj_pillar(rng: random.Random) -> pygame.Surface:
 
 
 def _obj_ruin(rng: random.Random) -> pygame.Surface:
-    w, h = 64, 46
+    w, h = 72, 46
     s = pygame.Surface((w, h), pygame.SRCALPHA)
-    pygame.draw.ellipse(s, (0, 0, 0, 55), (4, h - 8, 56, 6))
+    pygame.draw.ellipse(s, (0, 0, 0, 55), (6, h - 8, 60, 6))
     heights = [26, 18, 30, 12, 22, 16, 28, 14]
     for i, hh in enumerate(heights):
-        x = 2 + i * 8
+        x = 4 + i * 8
         _rect(s, STONE_D, x, h - 8 - hh, 8, hh)
         _rect(s, STONE, x, h - 8 - hh, 7, hh - 1)
         _rect(s, STONE_L, x, h - 8 - hh, 7, 2)
@@ -1029,6 +1063,11 @@ _OBJECT_BUILDERS = {
     "house_wide": lambda r: _obj_house(0, r, wide=True),
 }
 
+# Objects whose art is designed to run into the next tile, so touching the canvas
+# edge is correct for them (everything else must fit inside its canvas).
+TILING_OBJECTS = {"fence", "fence_v", "bridge", "house_a", "house_b", "house_c",
+                  "house_wide", "grave", "pillar", "flowerbed"}
+
 # collision footprint in tiles + how tall the sprite reaches above its tile
 OBJECT_META = {
     "oak_big": (1, 1), "oak_big_b": (1, 1), "oak_big_c": (1, 1),
@@ -1068,6 +1107,23 @@ def build_objects() -> dict[str, dict]:
 
 
 # ------------------------------------------------------------------ validate
+def _border_hits(surf: pygame.Surface) -> dict[str, int]:
+    """How many pixels of art sit on each edge of the canvas (0 = nothing clipped)."""
+    w, h = surf.get_size()
+    out = {"left": 0, "right": 0, "top": 0, "bottom": 0}
+    for y in range(h):
+        if surf.get_at((0, y))[3] > 0:
+            out["left"] += 1
+        if surf.get_at((w - 1, y))[3] > 0:
+            out["right"] += 1
+    for x in range(w):
+        if surf.get_at((x, 0))[3] > 0:
+            out["top"] += 1
+        if surf.get_at((x, h - 1))[3] > 0:
+            out["bottom"] += 1
+    return out
+
+
 def validate() -> list[str]:
     problems: list[str] = []
     if not pygame.get_init():
@@ -1092,6 +1148,15 @@ def validate() -> list[str]:
         ax, ay = data["anchor"]
         if not (0 <= ax <= w and 0 <= ay <= h):
             problems.append(f"object {name} anchor {data['anchor']} outside {surf.get_size()}")
+        # nothing may be cut off sideways or upwards: a clipped canopy reads as a bug.
+        # The bottom edge is where an object meets the ground, so it is allowed;
+        # objects that tile into their neighbour are exempt altogether.
+        if name not in TILING_OBJECTS:
+            hits = _border_hits(surf)
+            for side in ("left", "right", "top"):
+                if hits[side]:
+                    problems.append(f"object {name} is clipped on the {side} "
+                                    f"({hits[side]}px of art on the canvas edge)")
     return problems
 
 

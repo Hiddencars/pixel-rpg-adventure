@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel RPG 2.1.
+"""Rendering, UI screens and the main loop for Pixel RPG 2.2.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -271,11 +271,16 @@ class Renderer:
         p = g.player
         cam_x = max(0.0, min(W.MAP_W - self.view_w, p["x"] - self.view_w / 2))
         cam_y = max(0.0, min(W.MAP_H - self.view_h, p["y"] - self.view_h / 2))
+        if g.shake > 0:
+            # a short, decaying nudge on hits (can be switched off in the settings)
+            cam_x += math.sin(self.t * 61) * g.shake * 0.7
+            cam_y += math.cos(self.t * 47) * g.shake * 0.7
         self.cam_x, self.cam_y = cam_x, cam_y
 
         self.logical.fill(art.VOID)
         self.draw_tiles(cam_x, cam_y)
         self.draw_decor(cam_x, cam_y)
+        self.draw_glows(cam_x, cam_y)
         self.draw_corpses(cam_x, cam_y)
         self.draw_entities(cam_x, cam_y)
 
@@ -402,7 +407,18 @@ class Renderer:
             self.logical.blit(sh, ((o["x"] - cam_x) * TILE + TILE / 2 - sh.get_width() / 2,
                                    (o["y"] - cam_y) * TILE + TILE * 1.25))
         self.logical.blit(surf, (px, py))
-        if o["kind"].startswith("house") or o["kind"] in ("campfire", "lamp"):
+
+    def draw_glows(self, cam_x: float, cam_y: float) -> None:
+        """All lamp, fire and window light, drawn ONCE under the entities.
+
+        Light used to be drawn together with its object, which meant a glow could land
+        on top of the player and wash the sprite out; light belongs to the ground."""
+        for o in self.game.world.objects:
+            if not (o["kind"].startswith("house") or o["kind"] in ("campfire", "lamp")):
+                continue
+            if not (cam_x - 4 < o["x"] < cam_x + self.view_w + 4
+                    and cam_y - 5 < o["y"] < cam_y + self.view_h + 5):
+                continue
             self.draw_glow(o, cam_x, cam_y)
 
     def draw_glow(self, o: dict, cam_x: float, cam_y: float) -> None:
@@ -656,7 +672,7 @@ class Renderer:
         st = g.stats()
         w = S(340)
         self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.font_big.render("Пиксельное приключение 2.1", True,
+        screen.blit(self.font_big.render("Пиксельное приключение 2.2", True,
                                          (250, 246, 226)), (S(20), S(14)))
         screen.blit(self.font_small.render(
             f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
@@ -682,17 +698,22 @@ class Renderer:
             True, (232, 200, 170)), (S(120), S(88)))
 
         # minimap + region, in their own panel so nothing overlaps
-        mm_panel = (S(10), S(120), S(364), S(150))
-        self.panel(screen, mm_panel, radius=S(6))
-        mm = pygame.transform.scale(self.minimap, (S(200), S(102)))
-        screen.blit(mm, (S(20), S(130)))
-        pygame.draw.rect(screen, UI_EDGE, (S(20), S(130), S(200), S(102)), 1)
-        mx = S(20) + int(p["x"] / W.MAP_W * S(200))
-        my = S(130) + int(p["y"] / W.MAP_H * S(102))
-        pygame.draw.circle(screen, (255, 255, 255), (mx, my), S(3))
-        pygame.draw.circle(screen, (255, 90, 90), (mx, my), S(3), 1)
+        show_minimap = g.settings.get("minimap", True)
+        if show_minimap:
+            mm_panel = (S(10), S(120), S(364), S(150))
+            self.panel(screen, mm_panel, radius=S(6))
+            mm = pygame.transform.scale(self.minimap, (S(200), S(102)))
+            screen.blit(mm, (S(20), S(130)))
+            pygame.draw.rect(screen, UI_EDGE, (S(20), S(130), S(200), S(102)), 1)
+            mx = S(20) + int(p["x"] / W.MAP_W * S(200))
+            my = S(130) + int(p["y"] / W.MAP_H * S(102))
+            pygame.draw.circle(screen, (255, 255, 255), (mx, my), S(3))
+            pygame.draw.circle(screen, (255, 90, 90), (mx, my), S(3), 1)
         region = g.region_at(p["x"], p["y"])
-        info_x, info_y = S(232), S(130)
+        info_x = S(232) if show_minimap else S(20)
+        info_y = S(130) if show_minimap else S(120)
+        if not show_minimap:
+            self.panel(screen, (S(10), S(120), S(364), S(120)), radius=S(6))
         screen.blit(self.font_big.render(region["name"] if region else "—", True,
                                          (232, 240, 252)), (info_x, info_y))
         info_y += S(26)
@@ -713,13 +734,14 @@ class Renderer:
         # active quest tracker in its own panel under the minimap
         active = [q for q in g.quests if not q["done"]][:3]
         rows = max(1, len(active))
-        tr_panel = (S(10), S(278), S(364), S(28) + rows * S(22))
+        tr_y = S(278) if show_minimap else S(248)
+        tr_panel = (S(10), tr_y, S(364), S(28) + rows * S(22))
         self.panel(screen, tr_panel, radius=S(6))
         ready = sum(1 for q in g.quests if q.get("ready"))
         head = "Задания" + (f"   •   готово к сдаче: {ready}" if ready else "")
         screen.blit(self.font.render(head, True, (150, 240, 150) if ready else (236, 240, 248)),
-                    (S(20), S(284)))
-        qy = S(310)
+                    (S(20), tr_y + S(6)))
+        qy = tr_y + S(32)
         if not active:
             screen.blit(self.font_small.render("нет заданий — поговори с жителями",
                                                True, (168, 180, 198)), (S(20), qy))
@@ -733,11 +755,12 @@ class Renderer:
                         (S(340) - self.font_small.size(f"{q['progress']}/{q['goal']}")[0], qy))
             qy += S(22)
 
-        # hints
-        screen.blit(self.font_small.render(
-            "WASD — движение   ПРОБЕЛ — атака   1–9 — умения   E — говорить/торговля/собрать   "
-            "I — сумка   K — дуб навыков   Q — задания   F5/F9 — сохранить/загрузить   F10 — меню",
-            True, (196, 210, 234)), (S(10), self.height - S(22)))
+        # hints (the bottom legend can be switched off in the settings)
+        if g.settings.get("hints", True):
+            screen.blit(self.font_small.render(
+                "WASD — движение   ПРОБЕЛ — атака   1–9 — умения   E — говорить/собрать   "
+                "I — сумка   K — дуб навыков   Q — задания   H — зелье   F5/F9 — сохранить   F10 — меню",
+                True, (196, 210, 234)), (S(10), self.height - S(22)))
 
         # what is within reach right now
         hint = ""
@@ -758,7 +781,7 @@ class Renderer:
                 hint = f"E — поговорить: {n['name']} (есть дело)"
             else:
                 hint = f"E — поговорить: {n['name']}"
-        if hint:
+        if hint and g.settings.get("hints", True):
             txt = self.font.render(hint, True, (255, 244, 200))
             bx = self.width // 2 - txt.get_width() // 2
             by = self.height - S(150)
@@ -1386,6 +1409,98 @@ class Renderer:
         txt = self.font_small.render(hint, True, (162, 178, 202))
         screen.blit(txt, (x + w - txt.get_width() - S(16), y + h - S(24)))
 
+    # ------------------------------------------------------------- settings
+    def draw_settings(self, screen, tab: str, row: int, res_index: int,
+                      fullscreen: bool, note: str = "", capturing: bool = False) -> None:
+        g, S = self.game, self.s
+        screen.fill((9, 12, 20))
+        # soft vignette so the panel reads as a page, not a popup
+        for i in range(6):
+            a = 18 - i * 3
+            band = pygame.Surface((self.width, S(40)), pygame.SRCALPHA)
+            band.fill((30, 44, 70, max(0, a)))
+            screen.blit(band, (0, i * S(40)))
+        w, h = S(820), S(600)
+        x = (self.width - w) // 2
+        y = (self.height - h) // 2
+        self.panel(screen, (x, y, w, h), fill=(14, 18, 28, 250), border=(150, 170, 210),
+                   radius=S(10))
+        screen.blit(self.font_title.render("Настройки", True, (252, 244, 220)),
+                    (x + S(24), y + S(14)))
+        screen.blit(self.font_small.render("TAB — вкладка   •   ↑ ↓ — строка   •   "
+                                           "← → — значение   •   Enter — выбрать   •   "
+                                           "ESC — назад",
+                                           True, (162, 178, 202)),
+                    (x + S(24), y + S(52)))
+
+        # tabs
+        tx = x + S(24)
+        ty = y + S(78)
+        for key, label in G.Game.SETTINGS_TABS:
+            tw = S(150)
+            active = key == tab
+            rect = pygame.Rect(tx, ty, tw, S(34))
+            pygame.draw.rect(screen, (36, 46, 66) if active else (22, 26, 36), rect,
+                             border_radius=S(6))
+            pygame.draw.rect(screen, (250, 220, 140) if active else (62, 70, 88), rect, 2,
+                             border_radius=S(6))
+            txt = self.font.render(label, True,
+                                   (255, 240, 190) if active else (176, 188, 206))
+            screen.blit(txt, (rect.x + (tw - txt.get_width()) // 2, rect.y + S(6)))
+            tx += tw + S(10)
+
+        rows = g.settings_rows(tab, res_index, fullscreen)
+        row = max(0, min(row, len(rows) - 1))
+        ry = ty + S(50)
+        # the controls tab has thirteen rows, so the row height adapts to fit them all
+        avail = (y + h - S(44)) - ry
+        rh = max(S(26), min(S(46), avail // max(1, len(rows))))
+        for i, (action, label, value) in enumerate(rows):
+            rect = pygame.Rect(x + S(24), ry + i * rh, w - S(48), rh - S(4))
+            sel = i == row
+            if sel:
+                pygame.draw.rect(screen, (30, 38, 54), rect, border_radius=S(6))
+                pygame.draw.rect(screen, (240, 206, 130), rect, 2, border_radius=S(6))
+            text_y = rect.y + (rect.height - self.font.get_height()) // 2
+            screen.blit(self.font.render(label, True,
+                                         (248, 250, 255) if sel else (206, 216, 232)),
+                        (rect.x + S(14), text_y))
+            # value on the right: a slider for volumes, a pill for everything else
+            if action in ("sfx_volume", "music_volume"):
+                frac = float(g.settings[action])
+                bar = pygame.Rect(rect.right - S(300), rect.centery - S(6), S(190), S(12))
+                pygame.draw.rect(screen, (26, 30, 42), bar, border_radius=S(6))
+                if frac > 0:
+                    pygame.draw.rect(screen, (120, 200, 150),
+                                     (bar.x, bar.y, max(3, int(bar.width * frac)), bar.height),
+                                     border_radius=S(6))
+                pygame.draw.rect(screen, (74, 84, 104), bar, 1, border_radius=S(6))
+                vt = self.font.render(value, True, (236, 240, 250))
+                screen.blit(vt, (bar.right + S(12), text_y))
+            else:
+                vt = self.font.render(value, True,
+                                      (255, 236, 150) if sel else (216, 226, 242))
+                vx = rect.right - vt.get_width() - S(16)
+                if sel and not capturing:
+                    screen.blit(self.font.render("‹", True, (240, 206, 130)),
+                                (vx - S(18), text_y))
+                    screen.blit(self.font.render("›", True, (240, 206, 130)),
+                                (rect.right - S(14), text_y))
+                screen.blit(vt, (vx, text_y))
+        # key capture: the action name stays readable, only the value slot changes
+        if capturing:
+            rect = pygame.Rect(x + S(24), ry + row * rh, w - S(48), rh - S(4))
+            pygame.draw.rect(screen, (44, 34, 16), rect, border_radius=S(6))
+            pygame.draw.rect(screen, (250, 220, 140), rect, 2, border_radius=S(6))
+            pulse = 0.5 + 0.5 * math.sin(self.t * 5)
+            col = (int(210 + 45 * pulse), int(200 + 40 * pulse), 150)
+            txt = self.font.render("нажми клавишу…  (ESC — отмена)", True, col)
+            screen.blit(txt, (rect.right - txt.get_width() - S(16),
+                              rect.y + (rect.height - txt.get_height()) // 2))
+        if note:
+            screen.blit(self.font_small.render(note, True, (150, 230, 160)),
+                        (x + S(24), y + h - S(30)))
+
     # ------------------------------------------------------------------ menus
     def draw_title_backdrop(self, screen: pygame.Surface) -> None:
         g = self.game
@@ -1484,7 +1599,7 @@ class Renderer:
         if note:
             n = self.font_small.render(note, True, (186, 204, 228))
             screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.font_small.render("Пиксельное приключение — версия 2.1", True,
+        ver = self.font_small.render("Пиксельное приключение — версия 2.2", True,
                                      (150, 164, 188))
         screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
 
@@ -1564,17 +1679,17 @@ def handle_overlay_key(game: G.Game, renderer: Renderer, key: int) -> None:
 
 
 def handle_play_key(game: G.Game, key: int) -> None:
-    p = game.player
-    if key == pygame.K_i:
+    k = game.keys
+    if key == k.get("inventory", pygame.K_i):
         game.overlay = "inventory"
         game.sound("menu_select", 0.5)
-    elif key == pygame.K_k:
+    elif key == k.get("skills", pygame.K_k):
         game.overlay = "skilltree"
         game.sound("menu_select", 0.6)
-    elif key == pygame.K_q:
+    elif key == k.get("quests", pygame.K_q):
         game.overlay = "quests"
         game.sound("menu_move", 0.5)
-    elif key == pygame.K_e:
+    elif key == k.get("interact", pygame.K_e):
         if game.dialog:
             if game.dialog.get("shop"):
                 game.dialog = None
@@ -1583,9 +1698,9 @@ def handle_play_key(game: G.Game, key: int) -> None:
                 game.dialog = None
         else:
             game.interact()
-    elif key == pygame.K_m:
+    elif key == k.get("music", pygame.K_m):
         game.toast(game.toggle_music(), "#9ad7ff")
-    elif key == pygame.K_n:
+    elif key == k.get("next_track", pygame.K_n):
         game.toast(game.next_track(), "#9ad7ff")
     elif game.dialog and pygame.K_1 <= key <= pygame.K_3:
         msg = game.dialog_take_quest(key - pygame.K_1)
@@ -1598,13 +1713,13 @@ def handle_play_key(game: G.Game, key: int) -> None:
     elif key == pygame.K_TAB and game.dialog and game.dialog.get("shop"):
         game.dialog = None
         game.open_shop()
-    elif key == pygame.K_SPACE:
+    elif key == k.get("attack", pygame.K_SPACE):
         game.attack()
     elif key == pygame.K_F5:
         game.save()
     elif key == pygame.K_F9:
         game.load()
-    elif key == pygame.K_a:
+    elif key == k.get("potion", pygame.K_h):
         game.use_potion_hotkey()
     elif pygame.K_1 <= key <= pygame.K_9:
         game.cast(key - pygame.K_1)
@@ -1612,7 +1727,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel RPG Adventure 2.1")
+    pygame.display.set_caption("Pixel RPG Adventure 2.2")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:
@@ -1630,6 +1745,10 @@ def run() -> int:
     state = "title"
     selected = 0
     settings_from = "title"
+    settings_tab = "screen"
+    settings_row = 0
+    settings_note = ""
+    capturing = False
     note = ""
     running = True
 
@@ -1646,10 +1765,7 @@ def run() -> int:
                        ("Загрузить" + ("" if has_save else "   — нет сохранения"), has_save),
                        ("Настройки", True), ("В главное меню", True), ("Выход", True)]
         elif state == "settings":
-            entries = [(f"{w} x {h}" + ("   (Full HD)" if (w, h) == (1920, 1080) else ""), True)
-                       for (w, h, _z) in G.RESOLUTIONS]
-            entries.append((f"Полный экран: {'включён' if fullscreen else 'выключен'}", True))
-            entries.append(("Назад", True))
+            entries = []          # the settings screen has its own tabs and rows
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -1673,6 +1789,80 @@ def run() -> int:
                         selected = 0
                     else:
                         handle_play_key(game, event.key)
+                    continue
+                if state == "settings":
+                    rows_now = game.settings_rows(settings_tab, res_index, fullscreen)
+                    if capturing:
+                        if event.key == pygame.K_ESCAPE:
+                            settings_note = "Переназначение отменено"
+                        else:
+                            action = rows_now[min(settings_row, len(rows_now) - 1)][0]
+                            if action.startswith("key:"):
+                                name = action.split(":", 1)[1]
+                                settings_note = "Назначено — " + game.bind_key(name, event.key)
+                                game.sound("menu_select", 0.5)
+                        capturing = False
+                        continue
+                    if event.key == pygame.K_TAB:
+                        order = [k for k, _lbl in G.Game.SETTINGS_TABS]
+                        settings_tab = order[(order.index(settings_tab) + 1) % len(order)]
+                        settings_row = 0
+                        settings_note = ""
+                        game.sound("menu_move", 0.4)
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        settings_row = (settings_row - 1) % max(1, len(rows_now))
+                        game.sound("menu_move", 0.3)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        settings_row = (settings_row + 1) % max(1, len(rows_now))
+                        game.sound("menu_move", 0.3)
+                    elif event.key in (pygame.K_LEFT, pygame.K_a, pygame.K_RIGHT, pygame.K_d):
+                        step = 1 if event.key in (pygame.K_RIGHT, pygame.K_d) else -1
+                        action = rows_now[min(settings_row, len(rows_now) - 1)][0]
+                        if action.startswith("key:"):
+                            settings_note = "Enter — назначить клавишу"
+                        elif action.startswith("res:"):
+                            res_index = max(0, min(len(G.RESOLUTIONS) - 1,
+                                                   int(action.split(":")[1]) + step))
+                            screen, width, height, zoom = G.apply_display(res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            G.save_config({"res_index": res_index, "fullscreen": fullscreen})
+                            settings_note = f"Разрешение: {width} × {height}"
+                        elif action == "fullscreen":
+                            fullscreen = not fullscreen
+                            screen, width, height, zoom = G.apply_display(res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            G.save_config({"res_index": res_index, "fullscreen": fullscreen})
+                            settings_note = "Полный экран: " + ("включён" if fullscreen else "выключен")
+                        else:
+                            settings_note = game.change_setting(action, step)
+                        game.sound("menu_move", 0.3)
+                    elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        action = rows_now[min(settings_row, len(rows_now) - 1)][0]
+                        game.sound("menu_select", 0.6)
+                        if action.startswith("res:"):
+                            res_index = int(action.split(":")[1])
+                            screen, width, height, zoom = G.apply_display(res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            G.save_config({"res_index": res_index, "fullscreen": fullscreen})
+                            settings_note = f"Разрешение: {width} × {height}"
+                        elif action == "fullscreen":
+                            fullscreen = not fullscreen
+                            screen, width, height, zoom = G.apply_display(res_index, fullscreen)
+                            renderer.resize(width, height, zoom)
+                            G.save_config({"res_index": res_index, "fullscreen": fullscreen})
+                            settings_note = "Полный экран: " + ("включён" if fullscreen else "выключен")
+                        elif action.startswith("key:"):
+                            capturing = True
+                            settings_note = ""
+                        elif action == "reset_keys":
+                            settings_note = game.change_setting("reset_keys")
+                        else:
+                            settings_note = game.change_setting(action, 1)
+                    elif event.key == pygame.K_ESCAPE:
+                        state = settings_from
+                        settings_row = 0
+                        settings_note = ""
+                        game.sound("menu_move", 0.4)
                     continue
                 if event.key in (pygame.K_UP, pygame.K_w):
                     selected = (selected - 1) % len(entries)
@@ -1811,7 +2001,7 @@ def run() -> int:
 
         if state == "play":
             if not game.overlay:
-                game.update(dt, G.gather_input(pygame.key.get_pressed()))
+                game.update(dt, G.gather_input(pygame.key.get_pressed(), game.keys))
             else:
                 game.update(dt, {"up": False, "down": False, "left": False, "right": False})
             renderer.draw(screen)
@@ -1827,9 +2017,8 @@ def run() -> int:
                                note=note or "Стрелки / W S — выбор     Enter — подтвердить     "
                                             "Esc — продолжить")
         else:
-            renderer.draw_menu(screen, "Настройки", "Разрешение экрана и режим окна",
-                               entries, selected, backdrop=False,
-                               note=note or "Enter — применить     Esc — назад")
+            renderer.draw_settings(screen, settings_tab, settings_row, res_index,
+                                   fullscreen, note=settings_note, capturing=capturing)
         pygame.display.flip()
 
     game.save()

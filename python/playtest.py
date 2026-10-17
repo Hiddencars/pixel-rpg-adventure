@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless playtest for Pixel RPG 2.1 — fights, loots, trades and learns.
+"""Headless playtest for Pixel RPG 2.2 — fights, loots, trades and learns.
 
 Walks to the nearest hostile monster, attacks, casts abilities, picks up loot,
 sells everything at the merchant, spends skill points on the oak and renders every

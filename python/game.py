@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel RPG Adventure 2.1 — Python / pygame-ce.
+"""Pixel RPG Adventure 2.2 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -78,6 +78,51 @@ GIVER_NAMES = {"peasant": "Крестьянину", "farmer": "Фермеру", 
 RESOLUTIONS = [(960, 540, 1), (1280, 720, 2), (1366, 768, 2),
                (1600, 900, 2), (1920, 1080, 2)]
 DEFAULT_RES_INDEX = len(RESOLUTIONS) - 1
+
+# --------------------------------------------------------------- settings
+# Everything a player can tune. Stored in the config file next to the resolution.
+DEFAULT_SETTINGS: dict = {
+    "sfx_volume": 0.8,          # 0..1
+    "music_volume": 0.42,
+    "muted": False,
+    "difficulty": 1,            # 0 easy, 1 normal, 2 harsh
+    "damage_numbers": True,
+    "screen_shake": True,
+    "minimap": True,
+    "hints": True,
+    "autosave": True,
+}
+DIFFICULTY_NAMES = ("Лёгкая", "Обычная", "Суровая")
+DIFFICULTY_DAMAGE = (0.65, 1.0, 1.5)     # incoming damage multiplier
+
+# Rebindeable actions. Movement also always answers to the arrow keys.
+KEY_ACTIONS = [
+    ("up", "Вверх", "K_w"),
+    ("down", "Вниз", "K_s"),
+    ("left", "Влево", "K_a"),
+    ("right", "Вправо", "K_d"),
+    ("attack", "Атака", "K_SPACE"),
+    ("interact", "Действие / говорить", "K_e"),
+    ("inventory", "Сумка", "K_i"),
+    ("skills", "Дуб навыков", "K_k"),
+    ("quests", "Задания", "K_q"),
+    ("potion", "Выпить зелье", "K_h"),
+    ("music", "Музыка вкл/выкл", "K_m"),
+    ("next_track", "Следующая мелодия", "K_n"),
+]
+DEFAULT_KEYS = {name: getattr(pygame, code) for name, _label, code in KEY_ACTIONS}
+
+KEY_NAMES = {pygame.K_SPACE: "ПРОБЕЛ", pygame.K_RETURN: "ENTER", pygame.K_TAB: "TAB",
+             pygame.K_ESCAPE: "ESC", pygame.K_LSHIFT: "SHIFT", pygame.K_LCTRL: "CTRL",
+             pygame.K_UP: "↑", pygame.K_DOWN: "↓", pygame.K_LEFT: "←",
+             pygame.K_RIGHT: "→", pygame.K_BACKSPACE: "BACKSPACE"}
+
+
+def key_label(code: int) -> str:
+    if code in KEY_NAMES:
+        return KEY_NAMES[code]
+    name = pygame.key.name(code)
+    return name.upper() if name else "?"
 
 SAVE_PATH = Path.home() / ".pixel_rpg_adventure_save.json"
 CONFIG_PATH = Path.home() / ".pixel_rpg_adventure_config.json"
@@ -204,10 +249,21 @@ class Game:
 
         self.music_on = sound
         self.music = MUS.build_player(sound)
-        self.music.set_volume(MUSIC_VOLUME)
+        cfg = load_config()
+        self.settings = dict(DEFAULT_SETTINGS)
+        for k, v in (cfg.get("settings") or {}).items():
+            if k in self.settings:
+                self.settings[k] = v
+        self.keys = dict(DEFAULT_KEYS)
+        for action, code in (cfg.get("keys") or {}).items():
+            if action in self.keys and isinstance(code, int):
+                self.keys[action] = code
+        self.music.set_volume(self.settings["music_volume"])
         self.music_track: str | None = None
         self.combat_t = 0.0
         self.battle_track = False
+        self.shake = 0.0
+        self.apply_settings()
 
         self.spawn_npcs()
         self.spawn_mobs()
@@ -219,7 +275,111 @@ class Game:
 
     # ------------------------------------------------------------- sound
     def sound(self, name: str, volume: float = 1.0) -> None:
-        self.sfx.play(name, volume)
+        if self.settings.get("muted"):
+            return
+        self.sfx.play(name, volume * float(self.settings.get("sfx_volume", 0.8)))
+
+    # ---------------------------------------------------------- settings
+    def apply_settings(self) -> None:
+        """Push the current settings into the sound and music systems."""
+        vol = 0.0 if self.settings.get("muted") else float(self.settings["music_volume"])
+        self.music.set_volume(vol)
+        self.music_on = (not self.settings.get("muted")) and self.music_on
+        if self.settings.get("muted"):
+            self.music.stop(200)
+            self.music_track = None
+
+    def set_setting(self, key: str, value) -> None:
+        if key not in self.settings:
+            return
+        self.settings[key] = value
+        self.apply_settings()
+        self.save_settings()
+
+    def cycle_setting(self, key: str, step: int = 1) -> None:
+        """Step a numeric or boolean setting; used by the settings screen."""
+        cur = self.settings.get(key)
+        if isinstance(cur, bool):
+            self.set_setting(key, not cur)
+        elif key == "difficulty":
+            self.set_setting(key, max(0, min(len(DIFFICULTY_NAMES) - 1, int(cur) + step)))
+        else:
+            self.set_setting(key, max(0.0, min(1.0, round(float(cur) + step * 0.1, 2))))
+
+    def bind_key(self, action: str, code: int) -> str:
+        if action not in self.keys:
+            return ""
+        for other, other_code in self.keys.items():
+            if other != action and other_code == code:
+                self.keys[other] = self.keys[action]     # swap, never duplicate
+                break
+        self.keys[action] = code
+        self.save_settings()
+        return f"{action}: {key_label(code)}"
+
+    def save_settings(self) -> None:
+        cfg = load_config()
+        cfg["settings"] = self.settings
+        cfg["keys"] = self.keys
+        save_config(cfg)
+
+    def incoming_damage(self, dmg: float) -> float:
+        return dmg * DIFFICULTY_DAMAGE[int(self.settings.get("difficulty", 1))]
+
+    # ------------------------------------------------- the settings screen
+    SETTINGS_TABS = (("screen", "Экран"), ("sound", "Звук"),
+                     ("controls", "Управление"), ("game", "Игра"))
+
+    def settings_rows(self, tab: str, res_index: int = DEFAULT_RES_INDEX,
+                      fullscreen: bool = False) -> list[tuple[str, str, str]]:
+        """Rows for one settings tab: (action key, label, value text)."""
+        st = self.settings
+        rows: list[tuple[str, str, str]] = []
+        if tab == "screen":
+            for i, (w, h, z) in enumerate(RESOLUTIONS):
+                mark = "  •  выбрано" if i == res_index else ""
+                hd = "  (Full HD)" if (w, h) == (1920, 1080) else ""
+                rows.append((f"res:{i}", f"{w} × {h}{hd}", f"масштаб ×{z}{mark}"))
+            rows.append(("fullscreen", "Полный экран",
+                         "включён" if fullscreen else "выключен"))
+        elif tab == "sound":
+            rows.append(("sfx_volume", "Громкость эффектов",
+                         f"{int(round(st['sfx_volume'] * 100))}%"))
+            rows.append(("music_volume", "Громкость музыки",
+                         f"{int(round(st['music_volume'] * 100))}%"))
+            rows.append(("muted", "Выключить весь звук",
+                         "да" if st["muted"] else "нет"))
+        elif tab == "controls":
+            for action, label, _code in KEY_ACTIONS:
+                rows.append((f"key:{action}", label, key_label(self.keys[action])))
+            rows.append(("reset_keys", "Вернуть управление по умолчанию", ""))
+        else:
+            rows.append(("difficulty", "Сложность",
+                         DIFFICULTY_NAMES[int(st["difficulty"])]))
+            rows.append(("damage_numbers", "Показывать цифры урона",
+                         "да" if st["damage_numbers"] else "нет"))
+            rows.append(("screen_shake", "Тряска экрана при ударах",
+                         "да" if st["screen_shake"] else "нет"))
+            rows.append(("minimap", "Миникарта", "да" if st["minimap"] else "нет"))
+            rows.append(("hints", "Подсказки на экране", "да" if st["hints"] else "нет"))
+            rows.append(("autosave", "Автосохранение", "да" if st["autosave"] else "нет"))
+        return rows
+
+    def change_setting(self, action: str, step: int = 1) -> str:
+        """Left/right on a settings row. Returns a short note for the screen."""
+        if action in self.settings:
+            self.cycle_setting(action, step)
+            label = next((lbl for key, lbl, _c in KEY_ACTIONS if key == action), action)
+            if action == "difficulty":
+                return f"Сложность: {DIFFICULTY_NAMES[int(self.settings['difficulty'])]}"
+            if isinstance(self.settings[action], bool):
+                return f"{label}: {'да' if self.settings[action] else 'нет'}"
+            return f"{label}: {int(round(float(self.settings[action]) * 100))}%"
+        if action == "reset_keys":
+            self.keys = dict(DEFAULT_KEYS)
+            self.save_settings()
+            return "Управление сброшено"
+        return ""
 
     # ------------------------------------------------------- stats & skills
     def stats(self) -> dict:
@@ -997,6 +1157,8 @@ class Game:
         self.update_quests()
         self.update_harvest()
         self.update_music(dt, self.in_combat())
+        if self.shake > 0:
+            self.shake = max(0.0, self.shake - dt * 1.6)
 
     def update_player(self, dt: float, inp: dict) -> None:
         p = self.player
@@ -1078,10 +1240,14 @@ class Game:
                             dmg = max(1, raw - st["def"] * 0.6)
                             if p["invuln"] > 0:
                                 dmg *= 0.2
+                            dmg = self.incoming_damage(dmg)
                             p["hp"] -= dmg
                             p["hurt_t"] = 0.25
                             p["invuln"] = 0.25
-                            self.add_floater(p["x"], p["y"] - 1.0, f"-{int(dmg)}", "#ff7070")
+                            if self.settings.get("damage_numbers"):
+                                self.add_floater(p["x"], p["y"] - 1.0, f"-{int(dmg)}", "#ff7070")
+                            if self.settings.get("screen_shake"):
+                                self.shake = min(0.5, self.shake + 0.22)
                             self.add_particle(p["x"], p["y"], "#ff6b6b", 8)
                             self.sound("player_hurt", 0.8)
                             if st["thorns"] > 0:
@@ -1263,6 +1429,8 @@ class Game:
             m["flee"] = 6.0
         color = "#ffd166" if dmg > 12 else "#ffe066"
         self.add_floater(m["x"], m["y"] - 1.0, f"-{dmg}", color)
+        if self.settings.get("screen_shake") and dmg >= 12:
+            self.shake = min(0.4, self.shake + 0.1)
         self.add_particle(m["x"], m["y"], "#ffd166" if not ability else "#c8b0ff", 10)
         if not silent:
             self.sound("hit_metal" if m["kind"] in ("skeleton", "golem") else "hit", 0.7)
@@ -1324,6 +1492,8 @@ class Game:
             self.skill_points += 1
             self.sound("level_up")
             self.toast(f"Уровень {p['level']}! +1 очко навыка (K)", "#9ad7ff")
+            if self.settings.get("autosave"):
+                self.save()
 
     def player_died(self) -> None:
         p = self.player
@@ -1567,10 +1737,16 @@ KEYMAP = {
 }
 
 
-def gather_input(keys) -> dict:
+def gather_input(keys, keymap: dict | None = None) -> dict:
+    """Movement input from the pressed-key table, honouring the player's bindings.
+    The arrow keys always work as well, so a rebound layout never locks anyone out."""
+    keymap = keymap or DEFAULT_KEYS
     inp = {"up": False, "down": False, "left": False, "right": False}
-    for k, name in KEYMAP.items():
-        if keys[k]:
+    pairs = (("up", pygame.K_UP), ("down", pygame.K_DOWN),
+             ("left", pygame.K_LEFT), ("right", pygame.K_RIGHT))
+    for name, arrow in pairs:
+        code = keymap.get(name, arrow)
+        if (0 <= code < len(keys) and keys[code]) or (0 <= arrow < len(keys) and keys[arrow]):
             inp[name] = True
     return inp
 

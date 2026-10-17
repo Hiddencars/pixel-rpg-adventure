@@ -131,37 +131,47 @@ def _head(s, cx, cy, r, skin, hair, view, *, hat=None, beard=None, ears=None,
     if view == "down" and eyes != "none":
         ey = cy + r * 0.12
         if eyes == "glow":
-            _ell(s, (250, 240, 140), cx - r * 0.42, ey, r * 0.2, r * 0.2)
-            _ell(s, (250, 240, 140), cx + r * 0.42, ey, r * 0.2, r * 0.2)
+            for sx in (-1, 1):
+                pygame.draw.rect(s, (252, 244, 150),
+                                 (int(cx + sx * r * 0.42) - 1, int(ey) - 1, 3, 3))
         elif eyes == "hollow":
-            _ell(s, (24, 20, 26), cx - r * 0.42, ey, r * 0.26, r * 0.3)
-            _ell(s, (24, 20, 26), cx + r * 0.42, ey, r * 0.26, r * 0.3)
+            for sx in (-1, 1):
+                pygame.draw.rect(s, (22, 18, 24),
+                                 (int(cx + sx * r * 0.42) - 2, int(ey) - 2, 4, 4))
         else:
-            _ell(s, (250, 250, 252), cx - r * 0.42, ey, r * 0.24, r * 0.22)
-            _ell(s, (250, 250, 252), cx + r * 0.42, ey, r * 0.24, r * 0.22)
-            _ell(s, (40, 36, 44), cx - r * 0.38, ey, r * 0.13, r * 0.14)
-            _ell(s, (40, 36, 44), cx + r * 0.46, ey, r * 0.13, r * 0.14)
-            _ell(s, (255, 255, 255), cx - r * 0.48, ey - r * 0.1, r * 0.06, r * 0.06)
-            _ell(s, (255, 255, 255), cx + r * 0.36, ey - r * 0.1, r * 0.06, r * 0.06)
+            # crisp pixel eyes: a white block, a dark pupil and one highlight pixel.
+            # Tiny ellipses rasterise into a grey smear — that is what made faces blurry.
+            for sx in (-1, 1):
+                ex = int(cx + sx * r * 0.42)
+                eyi = int(ey)
+                pygame.draw.rect(s, (250, 250, 252), (ex - 1, eyi - 1, 3, 3))
+                pygame.draw.rect(s, (38, 34, 42), (ex - 1 + (1 if sx > 0 else 0),
+                                                   eyi - 1, 2, 2))
+                s.set_at((ex - 1 + (1 if sx > 0 else 0), eyi - 1), (255, 255, 255))
         # brows, nose and mouth: the difference between a face and two dots
         brow = shade(hair, 0.7)
-        w = max(1, int(r * 0.13))
-        pygame.draw.line(s, brow, (cx - r * 0.66, ey - r * 0.36), (cx - r * 0.18, ey - r * 0.46), w)
-        pygame.draw.line(s, brow, (cx + r * 0.66, ey - r * 0.36), (cx + r * 0.18, ey - r * 0.46), w)
-        _ell(s, shade(skin, 0.84), cx, ey + r * 0.34, r * 0.15, r * 0.13)
-        pygame.draw.line(s, shade(skin, 0.6), (cx - r * 0.24, ey + r * 0.64),
-                         (cx + r * 0.24, ey + r * 0.64), max(1, int(r * 0.13)))
+        w = max(1, int(r * 0.16))
+        pygame.draw.line(s, brow, (cx - r * 0.66, ey - r * 0.40), (cx - r * 0.18, ey - r * 0.50), w)
+        pygame.draw.line(s, brow, (cx + r * 0.66, ey - r * 0.40), (cx + r * 0.18, ey - r * 0.50), w)
+        pygame.draw.rect(s, shade(skin, 0.82),
+                         (int(cx - r * 0.10), int(ey + r * 0.24), max(2, int(r * 0.2)),
+                          max(2, int(r * 0.22))))
+        pygame.draw.line(s, shade(skin, 0.58), (cx - r * 0.26, ey + r * 0.66),
+                         (cx + r * 0.26, ey + r * 0.66), max(1, int(r * 0.15)))
         pygame.draw.line(s, shade(skin, 0.72), (cx - r * 0.5, ey + r * 0.2),
                          (cx - r * 0.72, ey + r * 0.44), 1)
         pygame.draw.line(s, shade(skin, 0.72), (cx + r * 0.5, ey + r * 0.2),
                          (cx + r * 0.72, ey + r * 0.44), 1)
     elif view == "side" and eyes != "none":
         ey = cy + r * 0.12
-        col = (250, 240, 140) if eyes == "glow" else (
-            (24, 20, 26) if eyes == "hollow" else (250, 250, 252))
-        _ell(s, col, cx + r * 0.34, ey, r * 0.22, r * 0.2)
-        if eyes == "normal":
-            _ell(s, (40, 36, 44), cx + r * 0.38, ey, r * 0.12, r * 0.13)
+        ex = int(cx + r * 0.34)
+        if eyes == "glow":
+            pygame.draw.rect(s, (252, 244, 150), (ex - 1, int(ey) - 1, 3, 3))
+        elif eyes == "hollow":
+            pygame.draw.rect(s, (22, 18, 24), (ex - 2, int(ey) - 2, 4, 4))
+        else:
+            pygame.draw.rect(s, (250, 250, 252), (ex - 1, int(ey) - 1, 3, 3))
+            pygame.draw.rect(s, (38, 34, 42), (ex, int(ey) - 1, 2, 2))
     if beard:
         _ell(s, beard, cx, cy + r * 0.75, r * 0.72, r * 0.5)
         _ell(s, mix(beard, (255, 255, 255), 0.2), cx, cy + r * 0.55, r * 0.6, r * 0.24)
@@ -699,9 +709,10 @@ def _quadruped(*, body, belly, head_c, frame=0, size=1.0, ears="up", tail="bushy
                                                  (hx - head_r * 0.1 * sc, hy + head_r * 0.7 * sc)])
     ex = hx + head_r * 0.3 * sc
     ey = hy - head_r * 0.16 * sc
-    _ell(s, (250, 250, 252), ex, ey, 2.2 * sc, 2.0 * sc)
-    _ell(s, eye, ex + 0.4 * sc, ey, 1.1 * sc, 1.2 * sc)
-    _ell(s, (255, 255, 255), ex - 0.4 * sc, ey - 0.7 * sc, 0.6 * sc, 0.6 * sc)
+    # crisp eye: white block, dark pupil, one highlight pixel
+    pygame.draw.rect(s, (250, 250, 252), (int(ex) - 1, int(ey) - 1, 3, 3))
+    pygame.draw.rect(s, eye, (int(ex), int(ey) - 1, 2, 2))
+    s.set_at((int(ex), int(ey) - 1), (255, 255, 255))
     _finish(s)
     return s
 
