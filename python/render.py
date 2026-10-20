@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.6.
+"""Rendering, UI screens and the main loop for Pixel patch 2.7.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -61,7 +61,13 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines
 
 
-FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+def _asset_root() -> Path:
+    """Где лежат ресурсы: в exe — во временной папке PyInstaller, в исходниках — рядом."""
+    base = getattr(sys, "_MEIPASS", None)
+    return Path(base) if base else Path(__file__).resolve().parent
+
+
+FONT_DIR = _asset_root() / "assets" / "fonts"
 _FONT_PIXEL = FONT_DIR / "PixelifySans.ttf"          # текст интерфейса
 _FONT_TITLE = FONT_DIR / "PressStart2P-Regular.ttf"  # логотип и крупные заголовки
 
@@ -2419,7 +2425,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.6")
+    pygame.display.set_caption("Pixel patch 2.7")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

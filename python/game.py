@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.6 — Python / pygame-ce.
+"""Pixel patch 2.7 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -1828,7 +1828,15 @@ def gather_input(keys, keymap: dict | None = None) -> dict:
 
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
+        # у exe нет консоли (--noconsole): отчёт пишем файлом, чтобы сборка
+        # могла проверить бинарник, а не только исходники
         import selftest
-        raise SystemExit(selftest.main())
+        code = selftest.main()
+        out = Path(os.environ.get("TEMP", ".")) / "pixelrpg_selftest_exit.txt"
+        try:
+            out.write_text(f"{code}\n", encoding="utf-8")
+        except OSError:
+            pass
+        raise SystemExit(code)
     import render
     raise SystemExit(render.run())
