@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.7 — Python / pygame-ce.
+"""Pixel patch 2.8 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -70,11 +70,45 @@ REGION_TRACK = {
     "swamp": "swamp", "highlands": "highlands", "ruins": "ruins",
     "graveyard": "graveyard", "camp": "forest", "shore": "village",
 }
+EVENT_INTERVAL = (70.0, 150.0)      # секунд между случайными событиями
 COMBAT_RANGE = 7.0                  # hostiles this close start the battle theme
 COMBAT_HOLD = 6.0                   # seconds of calm before the region theme returns
+SITE_NPC_INFO = {
+    "scout": ("Разведчик", [
+        "Дозор держу с тех пор, как руины начали шевелиться.",
+        "Дальше на восток лучше не ходить в одиночку.",
+        "Принеси вести с границ — заплачу."]),
+    "hunter": ("Охотник", [
+        "Зверь тут крупный, но шкура дорогая.",
+        "Следы волков видел у самой воды.",
+        "Приноси трофеи — не пропадать же добру."]),
+    "miner": ("Рудокоп", [
+        "Порода твёрдая, зато жила богатая.",
+        "В забое кто-то воет по ночам. Не ходи туда один.",
+        "Нужна руда — приноси, я знаю цену."]),
+    "fisher": ("Рыбак", [
+        "Рыба здесь клюёт только на рассвете.",
+        "В омуте что-то крупное. Сети рвёт.",
+        "Принеси мне трав на приманку — отдам улов."]),
+    "pilgrim": ("Паломник", [
+        "Свет в этой чаше не гаснет уже сотню лет.",
+        "Кто зажигает огонь — тот и хранит дорогу.",
+        "Помоги святилищу, и оно поможет тебе."]),
+    "hermit": ("Отшельник", [
+        "Я живу здесь, потому что здесь тихо.",
+        "Мёртвые не любят, когда их тревожат.",
+        "Принеси кости — я скажу, чьи они."]),
+    "nomad": ("Кочевник", [
+        "Мы не задерживаемся на одном месте.",
+        "Торгую тем, что нашёл по дороге.",
+        "Хочешь — идём вместе до следующего табора."]),
+}
+
 GIVER_NAMES = {"peasant": "Крестьянину", "farmer": "Фермеру", "smith": "Кузнецу",
                "merchant": "Торговцу", "elder": "Старейшине", "guard": "Стражнику",
-               "healer": "Знахарке"}
+               "healer": "Знахарке", "scout": "Разведчику", "hunter": "Охотнику",
+               "miner": "Рудокопу", "fisher": "Рыбаку", "pilgrim": "Паломнику",
+               "hermit": "Отшельнику", "nomad": "Кочевнику"}
 
 RESOLUTIONS = [(960, 540, 1), (1280, 720, 2), (1366, 768, 2),
                (1600, 900, 2), (1920, 1080, 2)]
@@ -283,6 +317,8 @@ class Game:
         self.battle_track = False
         self.shake = 0.0
         self.music_track = None
+        self.event_timer = 55.0
+        self.active_events = []
 
         self.spawn_npcs()
         self.spawn_mobs()
@@ -1072,6 +1108,21 @@ class Game:
              "lines": ["Раны затянутся, было бы чем платить.",
                        "Травы и зелья спасают чаще, чем меч."]},
         ]
+        # обитатели стоянок по всей карте: без них 4.8 млн клеток пустуют
+        for site in getattr(self.world, "sites", ()):
+            kind = site.get("npc")
+            info = SITE_NPC_INFO.get(kind)
+            if not info:
+                continue
+            name, lines = info
+            spot = self.world.nearest_walkable(site["x"], site["y"] + 3) \
+                or (site["x"], site["y"] + 3)
+            self.npcs.append({
+                "x": float(spot[0]) + 0.5, "y": float(spot[1]) + 0.5,
+                "kind": kind, "name": name, "dir": "down", "met": False,
+                "anim_t": 0.0, "lines": list(lines), "site": site["id"],
+                "site_name": site["name"],
+            })
 
     def spawn_mobs(self) -> None:
         rng = self.rng
@@ -1192,9 +1243,141 @@ class Game:
         self.update_quests()
         self.update_harvest()
         self.mark_explored()
+        self.update_events(dt)
         self.update_music(dt, self.in_combat())
         if self.shake > 0:
             self.shake = max(0.0, self.shake - dt * 1.6)
+
+    # -------------------------------------------------------------- события
+    def update_events(self, dt: float) -> None:
+        """Случайные события вокруг игрока: караван, налёт, клад, звезда, странник.
+
+        Без них мир читается как декорация: идёшь сорок минут, ничего не
+        происходит. Событие всегда случается рядом (10–22 тайла), чтобы игрок
+        успел его увидеть, и живёт ограниченное время.
+        """
+        for ev in list(self.active_events):
+            ev["t"] += dt
+            if ev["t"] >= ev["life"]:
+                self._end_event(ev)
+                self.active_events.remove(ev)
+        self.event_timer -= dt
+        if self.event_timer > 0:
+            return
+        self.event_timer = self.rng.uniform(*EVENT_INTERVAL)
+        self._start_event()
+
+    def _event_spot(self, near: float = 16.0):
+        """Проходимая клетка в 10–22 тайлах от игрока."""
+        p = self.player
+        for _ in range(40):
+            ang = self.rng.random() * math.tau
+            dist = near + self.rng.random() * 6
+            x = int(p["x"] + math.cos(ang) * dist)
+            y = int(p["y"] + math.sin(ang) * dist)
+            if self.world.walkable(x, y):
+                return x, y
+        return None
+
+    def _start_event(self) -> None:
+        rng = self.rng
+        kind = rng.choices(
+            ("raid", "cache", "meteor", "caravan", "wanderer", "beast"),
+            weights=(30, 22, 14, 16, 12, 6), k=1)[0]
+        spot = self._event_spot(18.0 if kind == "raid" else 13.0)
+        if spot is None:
+            return
+        x, y = spot[0] + 0.5, spot[1] + 0.5
+        ev = {"kind": kind, "x": x, "y": y, "t": 0.0, "life": 120.0, "ids": []}
+
+        if kind == "raid":
+            region = self.region_at(x, y)
+            kinds = (region or {}).get("mobs") or ["goblin", "wolf", "bandit"]
+            level = (region or {}).get("level", 1)
+            pack = rng.randrange(4, 7)
+            for i in range(pack):
+                k = rng.choice(kinds)
+                m = self.make_mob(x + rng.uniform(-2, 2), y + rng.uniform(-2, 2), k, level)
+                m["aggro"] = max(m["aggro"], 16.0)      # налёт сам идёт на игрока
+                m["event"] = True
+                self.mobs.append(m)
+                ev["ids"].append(id(m))
+            self.toast("Налёт! Кто-то идёт по твоему следу", "#ff8a7a")
+            self.sound("enemy_hit", 0.6)
+            ev["life"] = 150.0
+
+        elif kind == "cache":
+            self.world._place(int(x), int(y), "crate", solid=True)
+            for item_id in rng.sample(("potion", "ore_iron", "gem_ruby", "cloth", "herb"), 3):
+                self.drops.append({"x": x + rng.uniform(-0.4, 0.4),
+                                   "y": y + rng.uniform(0.2, 0.6),
+                                   "t": 0.0, "kind": item_id, "count": 1})
+            gold = rng.randrange(15, 45)
+            self.drops.append({"x": x, "y": y + 0.4, "t": 0.0, "kind": "gold",
+                               "count": gold})
+            self.toast("Рядом брошенный ящик — внутри что-то есть", "#ffe066")
+            ev["life"] = 40.0
+
+        elif kind == "meteor":
+            self.add_particle(x, y, "#fff2b0", 30, 5.0)
+            self.sound("levelup", 0.5)
+            for item_id in rng.sample(("ore_mithril", "gem_emerald", "gem_sapphire",
+                                       "ore_gold"), 2):
+                self.drops.append({"x": x + rng.uniform(-0.5, 0.5),
+                                   "y": y + rng.uniform(-0.5, 0.5),
+                                   "t": 0.0, "kind": item_id, "count": 1})
+            self.toast("С неба упала звезда — на месте падения что-то блестит", "#9ad7ff")
+            ev["life"] = 45.0
+
+        elif kind == "caravan":
+            npc = {"x": x, "y": y, "kind": "merchant", "name": "Караванщик",
+                   "dir": "down", "met": False, "anim_t": 0.0, "shop": True,
+                   "event": True,
+                   "lines": ["Караван идёт дальше через минуту.",
+                             "Бери, пока не свернулся: цены честные."]}
+            self.npcs.append(npc)
+            ev["npc"] = npc
+            self.toast("Караван встал неподалёку — торговля открыта", "#9ad7ff")
+            ev["life"] = 110.0
+
+        elif kind == "wanderer":
+            npc = {"x": x, "y": y, "kind": "pilgrim", "name": "Странник",
+                   "dir": "down", "met": False, "anim_t": 0.0, "event": True,
+                   "gift_gold": self.rng.randrange(12, 30),
+                   "lines": ["Иду с севера. Там, в кряже, кто-то жжёт огни по ночам.",
+                             "Держи монету — мне всё равно тяжело нести."]}
+            self.npcs.append(npc)
+            ev["npc"] = npc
+            self.toast("На дороге странник — у него есть, что рассказать", "#b6e3a0")
+            ev["life"] = 90.0
+
+        else:  # beast
+            region = self.region_at(x, y)
+            level = (region or {}).get("level", 1) + 2
+            kind_mob = rng.choice(("bear", "troll", "golem", "wraith"))
+            m = self.make_mob(x, y, kind_mob, level)
+            m["hp"] = m["hp_max"] = m["hp_max"] * 2.2
+            m["atk"] *= 1.4
+            m["xp"] = int(m["xp"] * 2.5)
+            m["event"] = True
+            self.mobs.append(m)
+            ev["ids"].append(id(m))
+            self.toast(f"Поблизости объявился {m['name']} — крупный и злой", "#ffb0a0")
+            ev["life"] = 180.0
+
+        self.active_events.append(ev)
+
+    def _end_event(self, ev: dict) -> None:
+        """Убрать временных участников события, чтобы мир не засорялся."""
+        if ev.get("npc") is not None:
+            npc = ev["npc"]
+            if npc in self.npcs:
+                self.npcs.remove(npc)
+            if self.dialog and self.dialog.get("name") == npc["name"]:
+                self.dialog = None
+        ids = set(ev.get("ids") or ())
+        if ids:
+            self.mobs = [m for m in self.mobs if id(m) not in ids or not m.get("event")]
 
     def mark_explored(self) -> None:
         """Открыть клетки карты вокруг игрока — туман войны для карты мира.
@@ -1593,9 +1776,14 @@ class Game:
             turns = self.ready_quests(giver) if giver else []
             self.dialog = {"name": n["name"], "line": self.rng.choice(n["lines"]),
                            "shop": bool(n.get("shop")), "giver": giver,
+                           "site": n.get("site_name", ""),
                            "offers": [q["id"] for q in offers[:3]],
                            "turns": [q["id"] for q in turns[:3]]}
             self.sound("dialog")
+            if n.get("gift_gold") and not n.get("gave"):
+                n["gave"] = True
+                self.player["gold"] += int(n["gift_gold"])
+                self.toast(f"Странник дал {n['gift_gold']} золота", "#ffe066")
             if n.get("gift") and not n.get("gave"):
                 n["gave"] = True
                 self.add_item("potion", 3)

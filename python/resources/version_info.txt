@@ -15,12 +15,12 @@ VSVersionInfo(
         StringTable(
           '040904B0',
           [
-            StringStruct('FileDescription', 'Pixel patch 2.7'),
-            StringStruct('FileVersion', '2.7.0.0'),
+            StringStruct('FileDescription', 'Pixel patch 2.8'),
+            StringStruct('FileVersion', '2.8.0.0'),
             StringStruct('InternalName', 'PixelPatch'),
             StringStruct('OriginalFilename', 'PixelPatch.exe'),
             StringStruct('ProductName', 'Pixel patch'),
-            StringStruct('ProductVersion', '2.7.0.0')
+            StringStruct('ProductVersion', '2.8.0.0')
           ]
         )
       ]

@@ -916,6 +916,21 @@ NPC_LOOKS = {
                    boots="brown", hat="hood"),
     "child": dict(skin="light", hair="blond", shirt="red", pants="blue",
                   boots="brown", size=0.72),
+    # --- обитатели стоянок по всей карте ---------------------------------
+    "scout": dict(skin="tan", hair="black", shirt="olive", pants="leather",
+                  boots="brown", hat="hood", build=1.02),
+    "hunter": dict(skin="tan", hair="brown", shirt="leather", pants="brown",
+                   boots="brown", hat="cap", beard="brown", shoulder=True),
+    "miner": dict(skin="tan", hair="grey", shirt="grey", pants="black",
+                  boots="black", hat="helm", build=1.1, beard="grey"),
+    "fisher": dict(skin="light", hair="blond", shirt="blue", pants="leather",
+                   boots="brown", hat="straw"),
+    "pilgrim": dict(skin="pale", hair="white", shirt="white", pants="violet",
+                    boots="brown", hat="hood", beard="white"),
+    "hermit": dict(skin="pale", hair="grey", shirt="brown", pants="brown",
+                   boots="black", hat="wizard", beard="white", build=0.95),
+    "nomad": dict(skin="tan", hair="black", shirt="red", pants="yellow",
+                  boots="brown", hat="cap", build=1.05),
 }
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel patch 2.7 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel patch 2.8 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes

@@ -236,6 +236,18 @@ class _Field:
 
 
 class World:
+    # сколько стоянок ставить и какие шаблоны существуют (kind, npc_kind)
+    SITE_COUNT = 46
+    SITE_TEMPLATES = (
+        ("ruins", "scout"), ("tower", "scout"),
+        ("camp", "hunter"), ("homestead", "hunter"),
+        ("mine", "miner"), ("mine", "miner"),
+        ("shrine", "pilgrim"), ("shrine", "pilgrim"),
+        ("fishing", "fisher"), ("fishing", "fisher"),
+        ("graveyard", "hermit"), ("graveyard", "hermit"),
+        ("nomad_camp", "nomad"), ("nomad_camp", "nomad"),
+    )
+
     def __init__(self, seed: int | None = None, progress=None):
         self.rng = random.Random(seed)
         self._progress = progress          # callback(доля 0..1, подпись) для экрана загрузки
@@ -534,6 +546,8 @@ class World:
         self._tick(0.90, "Трава и цветы")
         self._scatter_decor()
         self._define_regions()
+        self._tick(0.94, "Стоянки")
+        self._sites()
         self._tick(0.98, "Области")
 
     def _carve_lake(self, lx: int, ly: int, r: float) -> None:
@@ -831,6 +845,188 @@ class World:
 
         stone = ((arr == T_ROCK) | (arr == T_STONE)) & border
         add(stone & (r < 0.05), "pebble")
+
+    def _sites(self) -> None:
+        """Постройки и стоянки по всей карте: руины, башни, шахты, святилища.
+
+        До этого карта была почти пустой: девять областей и восемь
+        достопримечательностей на 4.8 млн клеток. Сайты ставятся детерминированно
+        от сида, с минимальным расстоянием друг от друга, и каждый помнит, кто
+        там живёт — по этому списку `Game.spawn_npcs` рассаживает NPC.
+        """
+        rng = self.rng
+        buckets: dict[tuple[int, int], list[dict]] = {}
+        for o in self.objects:
+            buckets.setdefault((o["x"] // 8, o["y"] // 8), []).append(o)
+        for d in self.decor:
+            buckets.setdefault((d["x"] // 8, d["y"] // 8), []).append(d)
+
+        drop: set[int] = set()
+        sites: list[dict] = []
+        min_dist = 110
+        # очередь шаблонов по кругу и перемешивание: чисто случайный выбор
+        # давал перекос (2 хутора против 12 лагерей), а карте нужны все типы
+        total = self.SITE_COUNT
+        base = list(self.SITE_TEMPLATES)
+        rng.shuffle(base)
+        queue = [base[i % len(base)] for i in range(total)]
+        rng.shuffle(queue)
+        attempts = 0
+        while len(sites) < total and attempts < total * 60:
+            attempts += 1
+            region = rng.choice(self.regions)
+            x0, y0, x1, y1 = region["rect"]
+            x0, y0 = max(4, x0), max(4, y0)
+            x1, y1 = min(MAP_W - 6, x1), min(MAP_H - 6, y1)
+            if x1 - x0 < 20 or y1 - y0 < 20:
+                continue
+            sx, sy = rng.randrange(x0, x1), rng.randrange(y0, y1)
+            if not self.walkable(sx, sy) or self.is_solid(sx, sy):
+                continue
+            t = self.tiles[sy][sx]
+            if t not in (T_GRASS, T_MEADOW, T_FOREST, T_MUD, T_STONE, T_SAND):
+                continue
+            if any(abs(sx - s["x"]) + abs(sy - s["y"]) < min_dist for s in sites):
+                continue
+            kind, npc_kind = queue[len(sites)]
+            name = self._site_name(kind, region["name"], rng)
+            self._clear_area(sx, sy, 6, buckets, drop)
+            getattr(self, "_site_" + kind)(sx, sy, rng)
+            sites.append({"id": f"site_{len(sites)}", "kind": kind, "name": name,
+                          "x": sx, "y": sy, "region": region["id"],
+                          "npc": npc_kind})
+        if drop:
+            self.objects = [o for o in self.objects if id(o) not in drop]
+            self.decor = [d for d in self.decor if id(d) not in drop]
+        self.sites = sites
+
+    def _site_name(self, kind: str, region: str, rng: random.Random) -> str:
+        """Имя стоянки: «Руины у Лугов», «Шахта в Кряже» — по шаблону и области."""
+        heads = {
+            "ruins": ("Руины", "Развалины", "Древние камни"),
+            "tower": ("Башня", "Сторожевой пост", "Дозор"),
+            "camp": ("Лагерь", "Стоянка", "Привал"),
+            "homestead": ("Хутор", "Заимка", "Двор"),
+            "mine": ("Шахта", "Заброшенный рудник", "Копи"),
+            "shrine": ("Святилище", "Алтарь", "Капище"),
+            "fishing": ("Рыбацкий стан", "Пристань", "Тоня"),
+            "graveyard": ("Погост", "Могильник", "Курган"),
+            "nomad_camp": ("Кочевье", "Стойбище", "Табор"),
+        }
+        tails = ("у Лугов", "в Тёмном бору", "на Кряже", "у Топи", "в Руинах",
+                 "на Погосте", "у Берега", "в Глуши", "на Пустоши")
+        head = rng.choice(heads.get(kind, ("Стоянка",)))
+        return f"{head} {rng.choice(tails)}"
+
+    def _clear_area(self, cx: int, cy: int, r: int,
+                    buckets: dict, drop: set) -> None:
+        """Расчистить площадку: убрать деревья и камни, выровнять землю."""
+        for by in range((cy - r) // 8 - 1, (cy + r) // 8 + 2):
+            for bx in range((cx - r) // 8 - 1, (cx + r) // 8 + 2):
+                for o in buckets.get((bx, by), ()):
+                    if abs(o["x"] - cx) <= r and abs(o["y"] - cy) <= r:
+                        drop.add(id(o))
+                        self.solid.discard((o["x"], o["y"]))
+        for y in range(cy - r, cy + r + 1):
+            if not (0 <= y < MAP_H):
+                continue
+            row = self.tiles[y]
+            for x in range(cx - r, cx + r + 1):
+                if not (0 <= x < MAP_W):
+                    continue
+                if row[x] in (T_VOID, T_DEEP, T_WATER, T_SHALLOW):
+                    continue
+                if (x - cx) ** 2 + (y - cy) ** 2 <= r * r:
+                    row[x] = T_GRASS if row[x] in (T_FOREST, T_MUD) else row[x]
+
+    # -- шаблоны стоянок ---------------------------------------------------
+    def _site_ruins(self, x: int, y: int, rng: random.Random) -> None:
+        for dx, dy in ((-3, -2), (3, -2), (-3, 2), (3, 2)):
+            self._place(x + dx, y + dy, "pillar", solid=True)
+        self._place(x, y - 1, "ruin", solid=True, fw=2)
+        for dx, dy in ((-1, 2), (2, 3), (-4, 1)):
+            self._place(x + dx, y + dy, "grave", solid=False)
+        for _ in range(5):
+            self._place(x + rng.randrange(-4, 5), y + rng.randrange(-3, 4),
+                        "rock_small", solid=False)
+
+    def _site_tower(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "tower", solid=True, fw=2)
+        self._place(x - 3, y + 2, "campfire", solid=False)
+        self._place(x + 3, y + 2, "crate", solid=True)
+        for dx in range(-4, 5):
+            if abs(dx) > 1:
+                self._place(x + dx, y + 3, "fence", solid=False)
+
+    def _site_camp(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "tent", solid=True, fw=2)
+        self._place(x - 3, y + 1, "campfire", solid=False)
+        self._place(x + 3, y + 2, "barrel", solid=True)
+        self._place(x - 4, y + 3, "log", solid=False)
+        self._place(x + 2, y - 3, "stump", solid=False)
+
+    def _site_homestead(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, rng.choice(("house_a", "house_b", "house_c")),
+                    solid=True, fw=3, fh=2)
+        self._place(x + 5, y + 1, "haystack", solid=True)
+        self._place(x + 4, y + 3, "well", solid=True)
+        for dy in range(-1, 4):
+            for dx in range(-6, -2):
+                if self.in_bounds(x + dx, y + dy) and self.tiles[y + dy][x + dx] == T_GRASS:
+                    self.tiles[y + dy][x + dx] = T_CROPS
+        for dx in range(-7, 8, 2):
+            self._place(x + dx, y + 4, "fence", solid=False)
+
+    def _site_mine(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "cave", solid=True, fw=2)
+        # дорога перед забоем: без неё пещера, вагонетка и фонарь читались
+        # как три отдельных спрайта на траве
+        for dx in range(-5, 6):
+            for dy in (2, 3):
+                if self.in_bounds(x + dx, y + dy):
+                    self.tiles[y + dy][x + dx] = T_PATH if dy == 3 else T_DIRT
+        for dx in (0, 1):
+            if self.in_bounds(x + dx, y + 1):
+                self.tiles[y + 1][x + dx] = T_DIRT
+        self._place(x - 4, y + 3, "cart", solid=True)
+        self._place(x + 4, y + 3, "crate", solid=True)
+        self._place(x + 3, y + 2, "lamp", solid=False)
+        self._place(x - 6, y + 2, "barrel", solid=True)
+        self._place(x - 3, y - 1, "rock_big", solid=True)
+        self._place(x + 3, y - 1, "rock_big", solid=True)
+        for _ in range(3):
+            self._place(x + rng.randrange(-5, 6), y + rng.randrange(4, 6),
+                        "rock_small", solid=False)
+
+    def _site_shrine(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "shrine", solid=True)
+        for dx, dy in ((-2, -1), (2, -1), (-2, 2), (2, 2)):
+            self._place(x + dx, y + dy, "pillar", solid=True)
+        self._place(x, y + 3, "campfire", solid=False)
+        for dx in range(-3, 4):
+            if self.in_bounds(x + dx, y + 4) and self.tiles[y + 4][x + dx] == T_GRASS:
+                self.tiles[y + 4][x + dx] = T_PATH
+
+    def _site_fishing(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "tent", solid=True, fw=2)
+        self._place(x - 3, y + 2, "barrel", solid=True)
+        self._place(x + 2, y + 2, "campfire", solid=False)
+        self._place(x + 4, y + 1, "crate", solid=True)
+        self._place(x - 4, y - 2, "log", solid=False)
+
+    def _site_graveyard(self, x: int, y: int, rng: random.Random) -> None:
+        for i in range(6):
+            self._place(x - 4 + (i % 3) * 3, y - 2 + (i // 3) * 3, "grave", solid=False)
+        self._place(x, y + 2, "pillar", solid=True)
+        self._place(x + 4, y - 3, "dead_tree", solid=True)
+        self._place(x - 5, y + 1, "shrine", solid=True)
+
+    def _site_nomad_camp(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "tent", solid=True, fw=2)
+        self._place(x + 4, y + 1, "tent", solid=True, fw=2)
+        self._place(x + 2, y + 3, "campfire", solid=False)
+        self._place(x - 3, y + 2, "stall", solid=True, fw=2)
+        self._place(x + 6, y + 3, "barrel", solid=True)
 
     def _define_regions(self) -> None:
         """Копия модульной REGIONS_DEF — чтобы экземпляр мог менять rect и т.п."""

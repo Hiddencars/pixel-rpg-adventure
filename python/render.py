@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.7.
+"""Rendering, UI screens and the main loop for Pixel patch 2.8.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -36,6 +36,13 @@ import sprites as SP
 import ui
 import world as W
 from art import TILE
+
+SITE_COLORS = {
+    "ruins": (196, 176, 140), "tower": (150, 176, 210), "camp": (222, 168, 96),
+    "homestead": (200, 200, 140), "mine": (170, 150, 130), "shrine": (232, 200, 120),
+    "fishing": (120, 176, 216), "graveyard": (150, 150, 170),
+    "nomad_camp": (216, 140, 120),
+}
 
 UI_BG = (12, 15, 24)
 UI_EDGE = (96, 118, 158)
@@ -1467,6 +1474,16 @@ class Renderer:
             cy = my0 + int((y0 + y1) / 2 * scale)
             ui.text_center(screen, self.font_tiny, r["name"].upper(), cx, cy, ui.TEXT)
 
+        # стоянки: точки интереса, которые игрок уже видел
+        for site in getattr(g.world, "sites", ()):
+            if (site["x"] // cell, site["y"] // cell) not in g.explored:
+                continue
+            sx = mx0 + int(site["x"] * scale)
+            sy = my0 + int(site["y"] * scale)
+            col = SITE_COLORS.get(site["kind"], ui.TEXT_DIM)
+            pygame.draw.rect(screen, ui.INK, (sx - 2, sy - 2, 5, 5))
+            pygame.draw.rect(screen, col, (sx - 1, sy - 1, 3, 3))
+
         # метка игрока: крупный крест с обводкой, мигает — на карте 3 000 тайлов
         # в ширину пиксель-маркер иначе просто не найти
         px = mx0 + int(p["x"] * scale)
@@ -1486,6 +1503,11 @@ class Renderer:
         ui.text_right(screen, self.font_small,
                       f"КАРТА ПРОЙДЕНА: {len(g.explored) * G.MAP_CELL * G.MAP_CELL * 100 // (W.MAP_W * W.MAP_H)}%",
                       mx0 + mw, fy, ui.TEXT_DIM)
+        known = sum(1 for st in getattr(g.world, "sites", ())
+                    if (st["x"] // cell, st["y"] // cell) in g.explored)
+        ui.text_center(screen, self.font_tiny,
+                       f"СТОЯНОК НАЙДЕНО {known}/{len(getattr(g.world, 'sites', ()))}",
+                       self.width // 2, fy, ui.TEXT_MUTED)
         ui.text_center(screen, self.font_small, "M или ESC — закрыть",
                        self.width // 2, self.height - S(26), ui.TEXT_MUTED)
 
@@ -2091,6 +2113,9 @@ class Renderer:
                    border=(226, 202, 132), radius=S(8))
         screen.blit(self.text(self.font_big, d["name"], True, (255, 226, 140)),
                     (x + S(20), y + S(12)))
+        if d.get("site"):
+            ui.text_right(screen, self.font_tiny, d["site"].upper(), x + w - S(20),
+                          y + S(18), ui.TEXT_MUTED)
         screen.blit(self.text(self.font, d["line"], True, (240, 242, 250)),
                     (x + S(20), y + S(46)))
         yy = y + S(78)
@@ -2425,7 +2450,7 @@ def handle_play_key(game: G.Game, key: int) -> None:
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.7")
+    pygame.display.set_caption("Pixel patch 2.8")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

@@ -905,6 +905,74 @@ def _obj_stall(rng: random.Random) -> pygame.Surface:
     return s
 
 
+def _obj_shrine(rng: random.Random) -> pygame.Surface:
+    """Каменная арка с чашей огня — святилище на перекрёстках и в глуши."""
+    w, h = 44, 66
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 70), (5, h - 9, 34, 7))
+    _rect(s, STONE_D, 6, h - 14, 32, 8)          # основание
+    _rect(s, STONE, 8, h - 16, 28, 4)
+    _rect(s, STONE_D, 8, 20, 8, h - 34)          # левая опора
+    _rect(s, STONE, 9, 20, 6, h - 34)
+    _rect(s, STONE_D, 28, 20, 8, h - 34)         # правая опора
+    _rect(s, STONE, 29, 20, 6, h - 34)
+    _rect(s, STONE_D, 6, 12, 32, 9)              # перекладина
+    _rect(s, STONE_L, 6, 12, 32, 2)
+    for x in range(8, 36, 5):                    # насечки на арке
+        _rect(s, STONE_D, x, 16, 1, 4)
+    _rect(s, IRON, 17, h - 26, 10, 8)            # чаша
+    _rect(s, IRON_L, 17, h - 26, 10, 2)
+    _rect(s, (232, 152, 72), 19, h - 31, 6, 5)   # огонь
+    _rect(s, (255, 214, 128), 20, h - 34, 4, 4)
+    for _ in range(3):                           # мох и трещины
+        _px(s, rng.randrange(9, 35), rng.randrange(22, h - 16), (86, 108, 72))
+    return s
+
+
+def _obj_tower(rng: random.Random) -> pygame.Surface:
+    """Сторожевая башня: узнаваемый силуэт, видна издалека."""
+    w, h = 58, 112
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 70), (8, h - 10, 42, 8))
+    _rect(s, STONE_D, 12, h - 16, 34, 10)        # цоколь
+    _rect(s, STONE, 14, 34, 30, h - 48)          # ствол
+    _rect(s, STONE_L, 14, 34, 4, h - 48)
+    _rect(s, STONE_D, 40, 34, 4, h - 48)
+    for y in range(44, h - 20, 9):               # кладка
+        _rect(s, STONE_D, 14, y, 30, 1)
+    for x in range(18, 44, 7):
+        _rect(s, STONE_D, x, 34, 1, h - 48)
+    _rect(s, (34, 30, 36), 26, 56, 7, 12)        # бойница
+    _rect(s, (34, 30, 36), 26, 84, 7, 10)
+    _rect(s, STONE_D, 8, 24, 42, 12)             # площадка
+    _rect(s, STONE, 8, 24, 42, 3)
+    for i in range(6):                           # зубцы
+        _rect(s, STONE, 9 + i * 7, 16, 5, 9)
+        _rect(s, STONE_L, 9 + i * 7, 16, 5, 2)
+    _rect(s, WOOD_D, 20, h - 30, 18, 5)          # дверь
+    _rect(s, WOOD, 21, h - 29, 16, 3)
+    for _ in range(4):
+        _px(s, rng.randrange(16, 42), rng.randrange(40, h - 20), STONE_D)
+    return s
+
+
+def _obj_cart(rng: random.Random) -> pygame.Surface:
+    """Вагонетка с рудой — примета шахт и брошенных лагерей."""
+    w, h = 42, 30
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (4, h - 6, 34, 5))
+    _rect(s, IRON, 6, 8, 30, 12)                 # кузов
+    _rect(s, IRON_L, 6, 8, 30, 2)
+    _rect(s, (66, 66, 74), 8, 11, 26, 7)
+    for _ in range(5):                           # руда
+        _rect(s, (150, 132, 96), rng.randrange(9, 31), rng.randrange(9, 14), 4, 3)
+    for cx in (13, 29):                          # колёса
+        pygame.draw.circle(s, (58, 58, 66), (cx, h - 8), 5)
+        pygame.draw.circle(s, IRON, (cx, h - 8), 3, 1)
+    _rect(s, WOOD_D, 4, 6, 3, 8)                 # ручка
+    return s
+
+
 def _obj_pillar(rng: random.Random) -> pygame.Surface:
     w, h = 34, 78
     s = pygame.Surface((w, h), pygame.SRCALPHA)
@@ -1135,6 +1203,9 @@ _OBJECT_BUILDERS = {
     "bridge": _obj_bridge,
     "flowerbed": _obj_flowerbed,
     "grave": _obj_grave,
+    "shrine": _obj_shrine,
+    "tower": _obj_tower,
+    "cart": _obj_cart,
     "house_a": lambda r: _obj_house(0, r),
     "house_b": lambda r: _obj_house(1, r),
     "house_c": lambda r: _obj_house(2, r),
@@ -1160,6 +1231,7 @@ OBJECT_META = {
     "crate": (1, 1), "lamp": (1, 1), "signpost": (1, 1), "haystack": (1, 1),
     "campfire": (1, 1), "tent": (2, 1), "stall": (2, 1), "pillar": (1, 1),
     "ruin": (2, 1), "cave": (2, 1), "bridge": (1, 1), "flowerbed": (1, 1),
+    "shrine": (1, 1), "tower": (2, 1), "cart": (1, 1),
     "grave": (1, 1),
     "house_a": (3, 2), "house_b": (3, 2), "house_c": (3, 2), "house_wide": (4, 2),
 }
