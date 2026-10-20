@@ -42,6 +42,7 @@ FPS = 60
 BASE_UI_WIDTH = 1248
 INV_SLOTS = 24
 HOTBAR_KEYS = 9
+MAP_CELL = 32            # размер клетки тумана войны на карте мира, в тайлах
 # the oak screen: zoomed in enough that neighbouring nodes never touch
 TREE_ZOOM_MIN = 1.0
 TREE_ZOOM_DEFAULT = 2.0
@@ -108,8 +109,9 @@ KEY_ACTIONS = [
     ("skills", "Дуб навыков", "K_k"),
     ("quests", "Задания", "K_q"),
     ("potion", "Выпить зелье", "K_h"),
-    ("music", "Музыка вкл/выкл", "K_m"),
+    ("music", "Музыка вкл/выкл", "K_F7"),
     ("next_track", "Следующая мелодия", "K_n"),
+    ("map", "Карта мира", "K_m"),
 ]
 DEFAULT_KEYS = {name: getattr(pygame, code) for name, _label, code in KEY_ACTIONS}
 
@@ -774,6 +776,8 @@ class Game:
         self.quest_stats = {"kill": {}, "chop": 0, "mine": 0, "gather": 0, "sold": 0}
         self.quests = []
         self.visited: set[str] = set()
+        # туман войны: множество открытых ячеек 32×32 тайла для карты мира
+        self.explored: set[tuple[int, int]] = set()
 
     def quest_current(self, q: dict) -> int:
         kind, target = q["kind"], q["target"]
@@ -1171,9 +1175,24 @@ class Game:
         self.update_effects(dt)
         self.update_quests()
         self.update_harvest()
+        self.mark_explored()
         self.update_music(dt, self.in_combat())
         if self.shake > 0:
             self.shake = max(0.0, self.shake - dt * 1.6)
+
+    def mark_explored(self) -> None:
+        """Открыть клетки карты вокруг игрока — туман войны для карты мира.
+
+        13 ячеек на кадр: дёшево и без заметных дыр по краям экрана, потому что
+        клетка — 32×32 тайла, то есть экран целиком.
+        """
+        cx = int(self.player["x"]) // MAP_CELL
+        cy = int(self.player["y"]) // MAP_CELL
+        ex = self.explored
+        for dy in (-2, -1, 0, 1, 2):
+            for dx in (-2, -1, 0, 1, 2):
+                if abs(dx) + abs(dy) <= 2:
+                    ex.add((cx + dx, cy + dy))
 
     def update_player(self, dt: float, inp: dict) -> None:
         p = self.player
@@ -1632,6 +1651,7 @@ class Game:
                     "music_on": self.music_on,
                     "merchant": self.merchant_stock,
                     "visited": sorted(self.visited), "kills": self.kills,
+                    "explored": sorted(self.explored),
                     "npcs_met": {n["name"]: n["met"] for n in self.npcs}}
             path.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                             encoding="utf-8")
@@ -1699,6 +1719,8 @@ class Game:
             self.merchant_stock = {k: int(v) for k, v in stock.items()
                                    if k in IT.ITEMS}
         self.visited = set(data.get("visited", []))
+        self.explored = {(int(c[0]), int(c[1])) for c in data.get("explored", [])
+                         if isinstance(c, (list, tuple)) and len(c) == 2}
         self.kills = dict(data.get("kills", {}))
         met = data.get("npcs_met", {})
         for n in self.npcs:

@@ -14,6 +14,7 @@ import pygame
 import game as G
 import render as R
 import skills as SK
+import world as WORLD
 
 OUT = Path(os.environ.get("TEMP", "."))
 W, H, Z = 1920, 1080, 2
@@ -126,6 +127,22 @@ def shot_tree():
     save(surf, "shot2_tree.png")
 
 
+def shot_map():
+    """Карта мира: проходим коридор, чтобы был виден туман войны."""
+    g, r = setup()
+    settle(g)
+    p = g.player
+    for _ in range(140):
+        p["x"] = min(WORLD.MAP_W - 40, p["x"] + 18)
+        p["y"] = min(WORLD.MAP_H - 40, p["y"] + 7)
+        g.mark_explored()
+    g.visited = {"village", "meadow", "forest"}
+    g.overlay = "map"
+    surf = pygame.Surface((W, H))
+    r.draw(surf)
+    save(surf, "shot2_map.png")
+
+
 def shot_menu():
     g, r = setup()
     settle(g)
@@ -145,4 +162,5 @@ if __name__ == "__main__":
     shot_inventory()
     shot_shop()
     shot_tree()
+    shot_map()
     pygame.quit()

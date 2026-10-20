@@ -33,6 +33,7 @@ import music as MUS
 import quests as QST
 import skills as SK
 import sprites as SP
+import ui
 import world as W
 from art import TILE
 
@@ -60,7 +61,18 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines
 
 
-def _font(size: int) -> pygame.font.Font:
+FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+_FONT_PIXEL = FONT_DIR / "PixelifySans.ttf"          # текст интерфейса
+_FONT_TITLE = FONT_DIR / "PressStart2P-Regular.ttf"  # логотип и крупные заголовки
+
+
+def _font(size: int, family: str = "pixel") -> pygame.font.Font:
+    """Пиксельный шрифт с кириллицей; системный — только если файла нет."""
+    path = _FONT_TITLE if family == "title" else _FONT_PIXEL
+    try:
+        return pygame.font.Font(str(path), size)
+    except Exception:
+        pass
     for name in ("consolas", "couriernew", "dejavusansmono", "liberationmono"):
         try:
             f = pygame.font.SysFont(name, size)
@@ -334,7 +346,8 @@ class Renderer:
         self.tree_rects: list[tuple[pygame.Rect, str]] = []
         self.shop_rects: list[tuple[pygame.Rect, int]] = []
         self.minimap = self._build_minimap()
-        self.minimap_scaled = pygame.transform.scale(self.minimap, (self.s(200), self.s(102)))
+        self.minimap_scaled = pygame.transform.scale(self.minimap, (self.s(160), self.s(80)))
+        self._map_scaled: tuple[tuple[int, int], pygame.Surface] | None = None
         self.t = 0.0
         self.light = lighting.LightLayer()
         self._text_cache: dict = {}
@@ -373,14 +386,14 @@ class Renderer:
         self.view_w = self.lw / TILE
         self.view_h = self.lh / TILE
         self.ui = width / G.BASE_UI_WIDTH
-        self.font_tiny = _font(max(10, round(10 * self.ui)))
-        self.font_small = _font(max(11, round(12 * self.ui)))
-        self.font = _font(max(13, round(15 * self.ui)))
-        self.font_big = _font(max(17, round(20 * self.ui)))
-        self.font_title = _font(max(26, round(38 * self.ui)))
+        self.font_tiny = _font(max(11, round(12 * self.ui)))
+        self.font_small = _font(max(12, round(14 * self.ui)))
+        self.font = _font(max(14, round(16 * self.ui)))
+        self.font_big = _font(max(18, round(20 * self.ui)))
+        self.font_title = _font(max(24, round(32 * self.ui)), "title")
         if getattr(self, "minimap", None) is not None:
             self.minimap_scaled = pygame.transform.scale(
-                self.minimap, (self.s(200), self.s(102)))
+                self.minimap, (self.s(160), self.s(80)))
 
     def s(self, v: float) -> int:
         return int(round(v * self.ui))
@@ -400,7 +413,7 @@ class Renderer:
         if surf is None:
             if len(self._text_cache) > 900:
                 self._text_cache.clear()
-            surf = font.render(text, True, col)
+            surf = font.render(text, False, col)
             self._text_cache[key] = surf
         return surf
 
@@ -556,10 +569,12 @@ class Renderer:
         screen.fill(art.VOID)
         screen.blit(self._scaled, (self.ox, self.oy))
         self.draw_text_layer(screen)
-        if g.overlay != "skilltree":           # the oak screen is a full-screen page
+        if g.overlay != "skilltree" and g.overlay != "map":  # oak screen и карта — полные страницы
             self.draw_hud(screen)
         if g.overlay == "inventory":
             self.draw_inventory(screen)
+        elif g.overlay == "map":
+            self.draw_map(screen)
         elif g.overlay == "skilltree":
             self.draw_skill_tree(screen)
         elif g.overlay == "shop":
@@ -1063,247 +1078,291 @@ class Renderer:
 
     # ------------------------------------------------------------------- HUD
     def panel(self, screen, rect, fill=(11, 13, 21, 243), border=UI_EDGE, radius=0) -> None:
-        """One panel style for the whole UI: opaque card, drop shadow, inner highlight.
+        """Пиксельная панель: обводка, светлая грань, тень — без скруглений.
 
-        The composite is cached per size and colour — rebuilding the shadow surface
-        every frame cost about 3 ms of the 60 fps budget on its own.
+        `radius` остался в подписи, чтобы не править три десятка вызовов, но
+        игнорируется: в пиксель-арте скруглённых углов нет.
         """
-        x, y, w, h = rect
-        key = (w, h, tuple(fill), tuple(border) if not isinstance(border, str) else border,
-               radius)
-        surf = self._panel_cache.get(key)
-        if surf is None:
-            surf = pygame.Surface((w + 8, h + 8), pygame.SRCALPHA)
-            for i, a in ((0, 26), (3, 20), (6, 12)):
-                pygame.draw.rect(surf, (0, 0, 0, a), (i + 4, i + 4, w + 8 - i * 2, h + 8 - i * 2),
-                                 border_radius=radius + 2 if radius else 0)
-            body = pygame.Surface((w, h), pygame.SRCALPHA)
-            if radius:
-                pygame.draw.rect(body, fill, (0, 0, w, h), border_radius=radius)
-                pygame.draw.rect(body, border, (0, 0, w, h), 1, border_radius=radius)
-                pygame.draw.rect(body, (255, 255, 255, 16), (1, 1, w - 2, h - 2), 1,
-                                 border_radius=max(0, radius - 1))
-            else:
-                body.fill(fill)
-                pygame.draw.rect(body, border, (0, 0, w, h), 1)
-                pygame.draw.line(body, (255, 255, 255, 18), (0, 0), (w, 0))
-            surf.blit(body, (4, 4))
-            if len(self._panel_cache) > 40:
-                self._panel_cache.clear()
-            self._panel_cache[key] = surf
-        screen.blit(surf, (x - 4, y - 4))
+        f = tuple(fill)[:3] if isinstance(fill, (tuple, list)) else ui.BG
+        b = tuple(border)[:3] if isinstance(border, (tuple, list)) else ui.EDGE
+        ui.frame(screen, rect, f, b)
 
     def draw_hud(self, screen) -> None:
+        """HUD по зонам, в пиксельном стиле.
+
+        низ   — жизнь/мана/опыт и хотбар с иконками и перезарядкой;
+        лево  — миникарта (уменьшена) и статы;
+        право — часы, эффекты и трекер заданий;
+        право-низ — тосты. Подсказка управления ушла в меню: в игре она только
+        мешала смотреть на мир.
+        """
         g, p, S = self.game, self.game.player, self.s
         st = g.stats()
-        w = S(340)
-        self.panel(screen, (S(10), S(10), w, S(104)), radius=S(6))
-        screen.blit(self.text(self.font_big, "Pixel patch 2.6", True,
-                                         (250, 246, 226)), (S(20), S(14)))
-        screen.blit(self.text(self.font_small, 
-            f"Ур. {p['level']}    Опыт {p['xp']}/{p['xp_next']}    Очки навыков: {g.skill_points}",
-            True, (186, 206, 236)), (S(20), S(38)))
-        # hp
-        pygame.draw.rect(screen, (28, 28, 36), (S(20), S(58), S(210), S(11)))
-        pygame.draw.rect(screen, (150, 40, 40), (S(20), S(58), S(210), S(11)))
-        pygame.draw.rect(screen, (92, 214, 108),
-                         (S(20), S(58), S(210) * max(0.0, p["hp"] / st["hp_max"]), S(11)))
-        screen.blit(self.text(self.font_small, 
-            f"{max(0, math.ceil(p['hp']))}/{int(st['hp_max'])}", True, (255, 255, 255)),
-            (S(236), S(56)))
-        # mana
-        pygame.draw.rect(screen, (28, 28, 36), (S(20), S(73), S(210), S(9)))
-        pygame.draw.rect(screen, (60, 120, 220),
-                         (S(20), S(73), S(210) * max(0.0, p["mp"] / st["mp_max"]), S(9)))
-        screen.blit(self.text(self.font_small, 
-            f"{int(p['mp'])}/{int(st['mp_max'])} MP", True, (200, 220, 255)), (S(236), S(70)))
-        screen.blit(self.text(self.font_small, f"Золото: {p['gold']}", True, GOLD),
-                    (S(20), S(88)))
-        screen.blit(self.text(self.font_small, 
-            f"Атака {int(st['atk'])}   Защита {int(st['def'])}   Крит {st['crit_chance']:.0f}%",
-            True, (232, 200, 170)), (S(120), S(88)))
+        region = g.region_at(p["x"], p["y"])
 
-        # время суток: без индикатора игрок не понимает, почему темнеет
+        # ------------------------------------------------------------ миникарта
+        show_minimap = g.settings.get("minimap", True)
+        left_h = 0
+        if show_minimap:
+            mm_w, mm_h = S(160), S(80)
+            self.panel(screen, (S(8), S(8), S(176), S(136)))
+            screen.blit(self.minimap_scaled, (S(16), S(16)))
+            pygame.draw.rect(screen, ui.INK, (S(16), S(16), mm_w, mm_h), 1)
+            mx = S(16) + int(p["x"] / W.MAP_W * mm_w)
+            my = S(16) + int(p["y"] / W.MAP_H * mm_h)
+            pygame.draw.rect(screen, ui.INK, (mx - 2, my - 2, 5, 5))
+            pygame.draw.rect(screen, ui.GOLD, (mx - 1, my - 1, 3, 3))
+            ui.text_center(screen, self.font_small,
+                           (region["name"] if region else "—").upper(),
+                           S(96), S(100), ui.GOLD)
+            ui.text_center(screen, self.font_tiny,
+                           f"ОТКРЫТО {len(g.visited)}/{len(g.world.regions)}   M — КАРТА",
+                           S(96), S(118), ui.TEXT_DIM)
+            left_h = S(142)
+
+        # статы: узкая панель под миникартой
+        sy = S(8) + left_h
+        self.panel(screen, (S(8), sy, S(176), S(62)))
+        ui.text(screen, self.font_small, f"ЗОЛОТО {p['gold']}", (S(16), sy + S(5)), ui.GOLD)
+        ui.text(screen, self.font_tiny,
+                f"АТК {int(st['atk'])}  ЗАЩ {int(st['def'])}  КРИТ {st['crit_chance']:.0f}%",
+                (S(16), sy + S(24)), ui.TEXT_DIM)
+        ui.text(screen, self.font_tiny,
+                f"УБИТО {sum(g.kills.values())}  СМЕРТЕЙ {g.deaths}",
+                (S(16), sy + S(40)), ui.TEXT_MUTED)
+
+        # --------------------------------------------------------------- часы
+        ph = None
         if g.settings.get("atmosphere", True):
             ph = self.light.forced_phase
             if ph is None:
                 ph = (lighting.START_PHASE + g.time / lighting.DAY_LENGTH) % 1.0
-            bw, bh = S(158), S(40)
-            bx, by = self.width - bw - S(12), S(10)
-            self.panel(screen, (bx, by, bw, bh), radius=S(6))
-            cx, cy, rr = bx + S(22), by + bh // 2, S(9)
-            if lighting.darkness(ph) < 0.42:
-                pygame.draw.circle(screen, (255, 212, 104), (cx, cy), rr)
-                pygame.draw.circle(screen, (255, 244, 196), (cx - S(2), cy - S(2)),
-                                   max(1, S(3)))
-            else:
-                pygame.draw.circle(screen, (216, 228, 255), (cx, cy), rr)
-                pygame.draw.circle(screen, (140, 156, 196), (cx + S(3), cy - S(3)),
-                                   max(2, S(6)))
-                pygame.draw.circle(screen, (12, 14, 22), (cx + S(7), cy - S(6)),
-                                   max(2, S(6)))
-            screen.blit(self.text(self.font_small, lighting.phase_name(ph), True,
-                                  (232, 240, 252)), (bx + S(42), by + S(3)))
+        right_y = S(8)
+        if ph is not None:
+            bw, bh = S(132), S(40)
+            bx = self.width - bw - S(8)
+            self.panel(screen, (bx, right_y, bw, bh))
+            self._sun_moon(screen, bx + S(14), right_y + S(20), S(7), ph)
+            ui.text(screen, self.font_small, lighting.phase_name(ph),
+                    (bx + S(30), right_y + S(4)), ui.TEXT)
             hours = ph * 24.0
-            screen.blit(self.text(self.font_tiny, f"{int(hours):02d}:{int(hours % 1 * 60):02d}",
-                                  True, (150, 168, 190)), (bx + S(42), by + S(22)))
+            ui.text(screen, self.font_tiny, f"{int(hours):02d}:{int(hours % 1 * 60):02d}",
+                    (bx + S(30), right_y + S(24)), ui.TEXT_DIM)
+            right_y += bh + S(6)
 
-        # minimap + region, in their own panel so nothing overlaps
-        show_minimap = g.settings.get("minimap", True)
-        if show_minimap:
-            mm_panel = (S(10), S(120), S(364), S(150))
-            self.panel(screen, mm_panel, radius=S(6))
-            screen.blit(self.minimap_scaled, (S(20), S(130)))
-            pygame.draw.rect(screen, UI_EDGE, (S(20), S(130), S(200), S(102)), 1)
-            mx = S(20) + int(p["x"] / W.MAP_W * S(200))
-            my = S(130) + int(p["y"] / W.MAP_H * S(102))
-            pygame.draw.circle(screen, (255, 255, 255), (mx, my), S(3))
-            pygame.draw.circle(screen, (255, 90, 90), (mx, my), S(3), 1)
-        region = g.region_at(p["x"], p["y"])
-        info_x = S(232) if show_minimap else S(20)
-        info_y = S(130) if show_minimap else S(120)
-        if not show_minimap:
-            self.panel(screen, (S(10), S(120), S(364), S(120)), radius=S(6))
-        screen.blit(self.text(self.font_big, region["name"] if region else "—", True,
-                                         (232, 240, 252)), (info_x, info_y))
-        info_y += S(26)
-        lines = [f"Исследовано: {len(g.visited)}/{len(g.world.regions)}",
-                 f"Убито: {sum(g.kills.values())}   Смертей: {g.deaths}"]
-        track = g.music_track if g.music_on else None
-        lines.append("♪ " + (MUS.TRACKS.get(track, {}).get("title", track) if track
-                             else "выкл (M)"))
-        buffs = ", ".join(f"{k} {int(v['t'])}с" for k, v in p["buffs"].items())
-        if buffs:
-            lines.append("Эффекты: " + buffs)
-        for i, text in enumerate(lines):
-            screen.blit(self.text(self.font_small, text, True, (176, 194, 218)),
-                        (info_x, info_y + i * S(18)))
-        screen.blit(self.text(self.font_tiny, "N — другая мелодия", True, (140, 152, 170)),
-                    (info_x, S(252)))
+        # эффекты — компактной строкой, только когда есть
+        if p["buffs"]:
+            names = "  ".join(f"{k} {int(v['t'])}" for k, v in p["buffs"].items())
+            f = self.font_tiny
+            bw = f.size(names)[0] + S(16)
+            bx = self.width - bw - S(8)
+            self.panel(screen, (bx, right_y, bw, S(20)))
+            ui.text(screen, f, names, (bx + S(8), right_y + S(5)), ui.GREEN)
+            right_y += S(26)
 
-        # active quest tracker in its own panel under the minimap
+        # трекер заданий
         active = [q for q in g.quests if not q["done"]][:3]
-        rows = max(1, len(active))
-        tr_y = S(278) if show_minimap else S(248)
-        tr_panel = (S(10), tr_y, S(364), S(28) + rows * S(22))
-        self.panel(screen, tr_panel, radius=S(6))
         ready = sum(1 for q in g.quests if q.get("ready"))
-        head = "Задания" + (f"   •   готово к сдаче: {ready}" if ready else "")
-        screen.blit(self.text(self.font, head, True, (150, 240, 150) if ready else (236, 240, 248)),
-                    (S(20), tr_y + S(6)))
-        qy = tr_y + S(32)
+        qw = S(268)
+        qx = self.width - qw - S(8)
+        rows = max(1, len(active))
+        qh = S(24) + rows * S(17)
+        self.panel(screen, (qx, right_y, qw, qh))
+        head = "ЗАДАНИЯ" + (f"  ГОТОВО {ready}" if ready else "")
+        ui.text(screen, self.font_small, head, (qx + S(8), right_y + S(4)),
+                ui.GREEN if ready else ui.TEXT)
         if not active:
-            screen.blit(self.text(self.font_small, "нет заданий — поговори с жителями",
-                                               True, (168, 180, 198)), (S(20), qy))
-        for q in active:
-            col = (150, 240, 150) if q.get("ready") else (222, 232, 246)
-            mark = "★" if q.get("ready") else "•"
-            screen.blit(self.text(self.font_small, f"{mark} {q['title']}", True, col),
-                        (S(20), qy))
-            screen.blit(self.text(self.font_small, f"{q['progress']}/{q['goal']}", True,
-                                               (170, 200, 236)),
-                        (S(340) - self.font_small.size(f"{q['progress']}/{q['goal']}")[0], qy))
-            qy += S(22)
+            ui.text(screen, self.font_tiny, "нет заданий — поговори с жителями",
+                    (qx + S(8), right_y + S(24)), ui.TEXT_DIM)
+        for i, q in enumerate(active):
+            col = ui.GREEN if q.get("ready") else ui.TEXT
+            mark = ">" if q.get("ready") else "-"
+            yy = right_y + S(24) + i * S(17)
+            ui.text(screen, self.font_tiny, f"{mark} {q['title']}", (qx + S(8), yy), col)
+            ui.text_right(screen, self.font_tiny, f"{q['progress']}/{q['goal']}",
+                          qx + qw - S(8), yy, ui.TEXT_DIM)
 
-        # hints (the bottom legend can be switched off in the settings)
-        if g.settings.get("hints", True):
-            # the legend used to be bare text over the ground: now it sits on a card
-            legend = ("WASD — движение     ПРОБЕЛ — атака     1–9 — умения     E — говорить/собрать"
-                      "     I — сумка     K — дуб     Q — задания     H — зелье     F10 — меню")
-            txt = self.text(self.font_small, legend, True, (206, 218, 240))
-            pad = S(10)
-            lw, lh = txt.get_width() + pad * 2, txt.get_height() + S(8)
-            self.panel(screen, (S(10), self.height - lh - S(6), lw, lh), radius=S(5))
-            screen.blit(txt, (S(10) + pad, self.height - lh - S(6) + S(4)))
+        # ------------------------------------------------- низ: жизнь и хотбар
+        slot = S(42)
+        gap = S(5)
+        n = G.HOTBAR_KEYS
+        hb_w = n * slot + (n - 1) * gap
+        hb_x = self.width // 2 - hb_w // 2
+        hb_y = self.height - slot - S(8)
 
-        # what is within reach right now
+        vit_w, vit_h = hb_w, S(46)
+        vit_y = hb_y - vit_h - S(6)
+        self.panel(screen, (hb_x, vit_y, vit_w, vit_h))
+
+        lv = S(32)
+        ui.slot(screen, (hb_x + S(6), vit_y + S(7), lv, lv))
+        ui.text_center(screen, self.font_big, str(p["level"]),
+                       hb_x + S(6) + lv // 2,
+                       vit_y + S(7) + (lv - self.font_big.get_height()) // 2, ui.GOLD)
+
+        bx = hb_x + lv + S(14)
+        num_w = S(62)
+        bw = vit_w - (bx - hb_x) - num_w - S(10)
+        hp_ratio = p["hp"] / max(1.0, st["hp_max"])
+        mp_ratio = p["mp"] / max(1.0, st["mp_max"])
+        xp_ratio = p["xp"] / max(1, p["xp_next"])
+        ui.bar(screen, (bx, vit_y + S(7), bw, S(12)), hp_ratio, ui.HP, ui.HP_HI, ticks=S(10))
+        ui.text_right(screen, self.font_tiny, f"{max(0, math.ceil(p['hp']))}/{int(st['hp_max'])}",
+                      bx + bw + num_w, vit_y + S(6), ui.TEXT)
+        ui.bar(screen, (bx, vit_y + S(22), bw, S(9)), mp_ratio, ui.MP, ui.MP_HI)
+        ui.text_right(screen, self.font_tiny, f"{int(p['mp'])}/{int(st['mp_max'])}",
+                      bx + bw + num_w, vit_y + S(20), ui.MP_HI)
+        ui.bar(screen, (bx, vit_y + S(34), bw, S(5)), xp_ratio, ui.XP)
+
+        # слоты умений: иконка, клавиша, перезарядка
+        hotbar = p["hotbar"]
+        for i in range(n):
+            x = hb_x + i * (slot + gap)
+            filled = i < len(hotbar)
+            ui.slot(screen, (x, hb_y, slot, slot), filled=filled)
+            ui.text(screen, self.font_tiny, str(i + 1), (x + S(3), hb_y + S(1)),
+                    ui.GOLD if filled else ui.TEXT_MUTED, shadow=False)
+            if not filled:
+                continue
+            ab = G.ABILITIES[hotbar[i]]
+            icon = SP.item_icon_surface(SK._ABILITY_ICON.get(hotbar[i], "scroll"))
+            icon = pygame.transform.scale(icon, (S(28), S(28)))
+            screen.blit(icon, (x + (slot - S(28)) // 2, hb_y + S(8)))
+            cd = p["cooldowns"].get(hotbar[i], 0.0)
+            if cd > 0:
+                ui.dither_rect(screen, (x + 1, hb_y + 1, slot - 2, slot - 2), ui.INK, 2)
+                ui.text_center(screen, self.font_tiny, f"{cd:.0f}",
+                               x + slot // 2, hb_y + slot // 2 - S(5), ui.TEXT)
+            if p["mp"] < ab["mana"]:
+                ui.text_right(screen, self.font_tiny, str(ab["mana"]),
+                              x + slot - S(3), hb_y + slot - S(13), ui.MP_HI, shadow=False)
+
+        # ------------------------------------------------------------ подсказка
         hint = ""
         node = g.nearest_node()
         if node:
-            kind = node["kind"]
             verb = {"tree": "E — срубить дерево", "stump": "E — взять пень",
                     "bush": "E — собрать кусты", "berry_bush": "E — собрать ягоды",
                     "flower": "E — сорвать цветок", "rock_small": "E — добыть камень"}
-            hint = verb.get(kind, "E — собрать")
-        elif g.nearest_npc():
-            n = g.nearest_npc()
-            offers = g.available_quests(n.get("kind", ""))
-            turns = g.ready_quests(n.get("kind", ""))
-            if turns:
-                hint = f"E — сдать задание {n['name']}"
-            elif offers:
-                hint = f"E — поговорить: {n['name']} (есть дело)"
-            else:
-                hint = f"E — поговорить: {n['name']}"
+            hint = verb.get(node["kind"], "E — собрать")
+        else:
+            npc = g.nearest_npc()
+            if npc:
+                if g.ready_quests(npc.get("kind", "")):
+                    hint = f"E — сдать задание: {npc['name']}"
+                elif g.available_quests(npc.get("kind", "")):
+                    hint = f"E — поговорить: {npc['name']} (есть дело)"
+                else:
+                    hint = f"E — поговорить: {npc['name']}"
         if hint and g.settings.get("hints", True):
-            txt = self.text(self.font, hint, True, (255, 244, 200))
-            bx = self.width // 2 - txt.get_width() // 2
-            by = self.height - S(150)
-            bg = pygame.Surface((txt.get_width() + S(28), txt.get_height() + S(12)),
-                                pygame.SRCALPHA)
-            bg.fill((10, 12, 20, 200))
-            screen.blit(bg, (bx - S(14), by - S(6)))
-            pygame.draw.rect(screen, (226, 202, 132),
-                             (bx - S(14), by - S(6), bg.get_width(), bg.get_height()), 1)
-            screen.blit(txt, (bx, by))
+            w = self.font_small.size(hint)[0] + S(20)
+            hx = self.width // 2 - w // 2
+            hy = vit_y - S(30)
+            ui.frame(screen, (hx, hy, w, S(24)), fill=ui.BG_DARK, edge=ui.GOLD_DIM,
+                     hi=ui.GOLD)
+            ui.text_center(screen, self.font_small, hint, self.width // 2, hy + S(5),
+                           ui.GOLD)
 
-        # hotbar
-        hb_y = self.height - S(96)
-        hotbar = p["hotbar"]
-        for i in range(G.HOTBAR_KEYS):
-            x = self.width // 2 - S(G.HOTBAR_KEYS * 62) // 2 + i * S(62)
-            rect = pygame.Rect(x, hb_y, S(56), S(56))
-            ready = i < len(hotbar)
-            pygame.draw.rect(screen, (26, 31, 44) if ready else (20, 23, 33), rect,
-                             border_radius=S(6))
-            pygame.draw.rect(screen, (250, 220, 130) if ready else (74, 82, 102), rect, 2,
-                             border_radius=S(6))
-            cap = pygame.Rect(x + S(4), hb_y + S(38), S(16), S(15))
-            pygame.draw.rect(screen, (34, 40, 56) if ready else (24, 28, 40), cap,
-                             border_radius=S(3))
-            pygame.draw.rect(screen, (250, 220, 130) if ready else (66, 74, 94), cap, 1,
-                             border_radius=S(3))
-            key = self.text(self.font_small, str(i + 1), True,
-                                         (240, 244, 255) if ready else (140, 148, 168))
-            screen.blit(key, (cap.centerx - key.get_width() // 2,
-                              cap.centery - key.get_height() // 2))
-            if ready:
-                ab = G.ABILITIES[hotbar[i]]
-                icon = SP.item_icon_surface(SK._ABILITY_ICON.get(hotbar[i], "scroll"))
-                screen.blit(pygame.transform.scale(icon, (S(34), S(34))),
-                            (x + S(11), hb_y + S(6)))
-                cd = p["cooldowns"].get(hotbar[i], 0.0)
-                if cd > 0:
-                    overlay = pygame.Surface((rect[2], rect[3]), pygame.SRCALPHA)
-                    overlay.fill((10, 12, 20, 170))
-                    screen.blit(overlay, (x, hb_y))
-                    txt = self.text(self.font_small, f"{cd:.1f}", True, (255, 240, 200))
-                    screen.blit(txt, (x + S(28) - txt.get_width() / 2, hb_y + S(20)))
-                if p["mp"] < ab["mana"]:
-                    screen.blit(self.text(self.font_small, str(ab["mana"]), True, (120, 160, 255)),
-                                (x + S(38), hb_y + S(38)))
-            else:
-                # an empty slot should look empty, not like a missing texture
-                pygame.draw.circle(screen, (46, 52, 68), (x + S(28), hb_y + S(26)), S(4))
-                if i == 0:
-                    hint = self.text(self.font_tiny, "активные умения — на дубе (K)", True,
-                                                 (146, 154, 172))
-                    screen.blit(hint, (x + S(28) - hint.get_width() // 2, hb_y - S(34)))
-
-        # toasts
-        ty = self.height - S(150)
+        # --------------------------------------------------------------- тосты
+        ty = hb_y - S(8)
+        tw = S(320)
+        tx = self.width - tw - S(8)
         for t in reversed(g.toasts[-4:]):
             a = (t["t"] / 0.2 if t["t"] < 0.2
                  else (t["life"] - t["t"]) / 0.6 if t["t"] > t["life"] - 0.6 else 1)
-            surf = pygame.Surface((S(520), S(26)), pygame.SRCALPHA)
-            pygame.draw.rect(surf, (10, 12, 18, int(210 * a)), (0, 0, S(520), S(26)),
-                             border_radius=S(4))
-            screen.blit(surf, (S(10), ty))
-            txt = self.text(self.font_small, t["text"], True, pygame.Color(t["color"]))
-            txt.set_alpha(int(255 * a))
-            screen.blit(txt, (S(20), ty + S(7)))
-            ty -= S(30)
+            if a <= 0.05:
+                ty -= S(24)
+                continue
+            ui.frame(screen, (tx, ty - S(22), tw, S(22)), fill=ui.BG_DARK)
+            msg = t["text"]
+            f = self.font_tiny
+            while msg and f.size(msg)[0] > tw - S(14):
+                msg = msg[:-2]
+            ui.text(screen, f, msg, (tx + S(7), ty - S(19)),
+                    pygame.Color(t["color"]) if a > 0.5 else ui.TEXT_MUTED)
+            ty -= S(24)
 
+    def _sun_moon(self, screen, cx: int, cy: int, r: int, phase: float) -> None:
+        """Пиксельные солнце и луна: квадраты вместо кругов, без сглаживания."""
+        if lighting.darkness(phase) < 0.42:
+            pygame.draw.rect(screen, (255, 208, 96), (cx - r, cy - r, r * 2, r * 2))
+            pygame.draw.rect(screen, (255, 244, 190), (cx - r + 2, cy - r + 2, r, r))
+        else:
+            pygame.draw.rect(screen, (208, 220, 250), (cx - r, cy - r, r * 2, r * 2))
+            pygame.draw.rect(screen, (150, 166, 206), (cx + 2, cy - r, r, r))
+            pygame.draw.rect(screen, ui.BG, (cx + r - 2, cy - r - 2, r, r * 2))
+
+    def draw_map(self, screen) -> None:
+        """Карта мира на M: весь остров, туман войны, подписи открытых областей."""
+        g, p, S = self.game, self.game.player, self.s
+        screen.fill(ui.BG_DARK)
+
+        ui.text_center(screen, self.font_title, "КАРТА МИРА", self.width // 2, S(8), ui.GOLD)
+
+        avail_w = self.width - S(64)
+        avail_h = self.height - S(150)
+        scale = min(avail_w / W.MAP_W, avail_h / W.MAP_H)
+        mw, mh = max(1, int(W.MAP_W * scale)), max(1, int(W.MAP_H * scale))
+        key = (mw, mh)
+        if self._map_scaled is None or self._map_scaled[0] != key:
+            self._map_scaled = (key, pygame.transform.scale(self.minimap, key))
+        map_surf = self._map_scaled[1]
+
+        mx0 = (self.width - mw) // 2
+        my0 = S(52) + max(0, (avail_h - mh) // 2)
+        ui.frame(screen, (mx0 - S(4), my0 - S(4), mw + S(8), mh + S(8)), fill=ui.BG)
+        screen.blit(map_surf, (mx0, my0))
+
+        # туман войны: одна клетка = 32×32 тайла, рисуется мелкой маской и
+        # растягивается — так дёшево и остаётся пиксельно-блочным
+        cell = G.MAP_CELL
+        cw = (W.MAP_W + cell - 1) // cell
+        ch = (W.MAP_H + cell - 1) // cell
+        fog_key = (cw, ch, len(g.explored))
+        if getattr(self, "_fog_key", None) != fog_key:
+            fog = pygame.Surface((cw, ch), pygame.SRCALPHA)
+            fog.fill((7, 9, 15, 255))
+            for (cx, cy) in g.explored:
+                if 0 <= cx < cw and 0 <= cy < ch:
+                    fog.set_at((cx, cy), (0, 0, 0, 0))
+            self._fog = pygame.transform.scale(fog, (mw, mh))
+            self._fog_key = fog_key
+        screen.blit(self._fog, (mx0, my0))
+        pygame.draw.rect(screen, ui.INK, (mx0, my0, mw, mh), 1)
+
+        # подписи только тех областей, чей центр игрок уже видел
+        for r in g.world.regions:
+            if r["id"] not in g.visited:
+                continue
+            x0, y0, x1, y1 = r["rect"]
+            ccx, ccy = (x0 + x1) // 2 // cell, (y0 + y1) // 2 // cell
+            if (ccx, ccy) not in g.explored:
+                continue
+            cx = mx0 + int((x0 + x1) / 2 * scale)
+            cy = my0 + int((y0 + y1) / 2 * scale)
+            ui.text_center(screen, self.font_tiny, r["name"].upper(), cx, cy, ui.TEXT)
+
+        # метка игрока: крупный крест с обводкой, мигает — на карте 3 000 тайлов
+        # в ширину пиксель-маркер иначе просто не найти
+        px = mx0 + int(p["x"] * scale)
+        py = my0 + int(p["y"] * scale)
+        on = int(self.t * 2) % 2 == 0
+        col = (255, 240, 168) if on else ui.GOLD
+        pygame.draw.rect(screen, ui.INK, (px - 7, py - 7, 15, 15))
+        pygame.draw.rect(screen, col, (px - 6, py - 6, 13, 13))
+        pygame.draw.rect(screen, ui.INK, (px - 4, py - 4, 9, 9))
+        pygame.draw.rect(screen, (255, 255, 255), (px - 3, py - 3, 7, 7))
+
+        # подвал: что открыто и как закрыть
+        fy = my0 + mh + S(10)
+        ui.text(screen, self.font_small,
+                f"ОБЛАСТИ: {len(g.visited)}/{len(g.world.regions)}",
+                (mx0, fy), ui.TEXT_DIM)
+        ui.text_right(screen, self.font_small,
+                      f"КАРТА ПРОЙДЕНА: {len(g.explored) * G.MAP_CELL * G.MAP_CELL * 100 // (W.MAP_W * W.MAP_H)}%",
+                      mx0 + mw, fy, ui.TEXT_DIM)
+        ui.text_center(screen, self.font_small, "M или ESC — закрыть",
+                       self.width // 2, self.height - S(26), ui.TEXT_MUTED)
 
     # ------------------------------------------------------------- inventory
     def draw_inventory(self, screen) -> None:
@@ -2135,6 +2194,11 @@ class Renderer:
 def handle_overlay_key(game: G.Game, renderer: Renderer, key: int) -> None:
     """Keys while an overlay (inventory / tree / shop / quests) is open."""
     overlay = game.overlay
+    if overlay == "map":
+        if key in (pygame.K_ESCAPE, pygame.K_m):
+            game.overlay = None
+            game.sound("menu_move", 0.5)
+        return
     if overlay == "inventory":
         inv = game.player["inventory"]
         if key in (pygame.K_LEFT, pygame.K_a):
@@ -2227,6 +2291,9 @@ def handle_play_key(game: G.Game, key: int) -> None:
         game.toast(game.toggle_music(), "#9ad7ff")
     elif key == k.get("next_track", pygame.K_n):
         game.toast(game.next_track(), "#9ad7ff")
+    elif key == k.get("map", pygame.K_m):
+        game.overlay = "map"
+        game.sound("menu_select", 0.5)
     elif game.dialog and pygame.K_1 <= key <= pygame.K_3:
         msg = game.dialog_take_quest(key - pygame.K_1)
         if msg:
