@@ -16,6 +16,10 @@
 
 ![Дикие земли: плотный декор и мягкие стыки биомов](docs/screenshot-wilds.png)
 
+![Карта мира на `M`: туман войны и открытые области](docs/screenshot-map.png)
+
+![Главное меню](docs/screenshot-menu.png)
+
 ## Играть
 
 **Скачать `.exe`:** вкладка [Releases](../../releases) → `PixelPatch.exe` (Windows,
