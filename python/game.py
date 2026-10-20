@@ -273,7 +273,8 @@ class Game:
         self.learn("root")                     # the trunk is always unlocked
         for item_id, count in (("potion", 3), ("herb", 3), ("mana_potion", 1)):
             self.add_item(item_id, count)
-        self.toast("Новая игра: мир вырос в десять раз — 320 000 клеток", "#ffe066")
+        cells = f"{W.MAP_W * W.MAP_H:,}".replace(",", " ")
+        self.toast(f"Новая игра: мир {W.MAP_W}×{W.MAP_H} — {cells} клеток", "#ffe066")
 
     # ------------------------------------------------------------- sound
     def sound(self, name: str, volume: float = 1.0) -> None:
@@ -969,7 +970,7 @@ class Game:
         if self.battle_track:
             return "battle"
         region = self.region_at(self.player["x"], self.player["y"])
-        return REGION_TRACK.get(region["id"] if region else "", "meadow")
+        return REGION_TRACK.get(region["id"] if region else "", "forest")
 
     def update_music(self, dt: float, in_combat: bool) -> None:
         if not self.music_on:

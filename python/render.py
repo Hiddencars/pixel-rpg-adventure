@@ -18,9 +18,11 @@ import math
 import os
 import random
 import sys
+
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pygame
 
 import art
@@ -481,8 +483,8 @@ class Renderer:
         cached = getattr(self.game.world, "_minimap", None)
         if cached is not None:
             return cached
-        w = W.MAP_W * 2
-        h = W.MAP_H * 2
+        w = W.MAP_W
+        h = W.MAP_H
         surf = pygame.Surface((w, h))
         palette = {
             art.T_VOID: (9, 16, 26), art.T_DEEP: (22, 58, 112),
@@ -494,13 +496,16 @@ class Renderer:
             art.T_MUD: (88, 74, 56), art.T_CROPS: (150, 160, 80),
             art.T_FLOOR: (132, 98, 62), art.T_ROCK: (72, 72, 78),
         }
-        for y in range(W.MAP_H):
-            for x in range(W.MAP_W):
-                col = palette.get(self.game.world.tiles[y][x], (0, 0, 0))
-                surf.fill(col, (x * 2, y * 2, 2, 2))
+        # потайловый fill на 4.8 млн клеток — это секунды; палитра применяется
+        # одной векторной операцией (LUT), один пиксель на тайл
+        lut = np.zeros((16, 3), dtype=np.uint8)
+        for tile_id, col in palette.items():
+            lut[tile_id] = col
+        rgb = lut[self.game.world._tile_array()]
+        pygame.surfarray.blit_array(surf, rgb.transpose(1, 0, 2))
         for o in self.game.world.objects:
             if o["kind"].startswith("house"):
-                surf.fill((120, 60, 50), (o["x"] * 2, o["y"] * 2, 6, 4))
+                surf.fill((120, 60, 50), (o["x"], o["y"], 3, 2))
         self.game.world._minimap = surf
         return surf
 
@@ -745,23 +750,35 @@ class Renderer:
                                     len(g.available_quests(n.get("kind", ""))))
                 for n in g.npcs if n.get("kind")}
         items: list[tuple[float, Callable[[], None]]] = []
+        # отсечение по камере до создания лямбд: на карте 3 100×1 550 мобов
+        # почти две тысячи, и каждый кадр их всех сортировать и рисовать — 40 мс
+        x0, y0 = cam_x - 2, cam_y - 2
+        x1, y1 = cam_x + self.view_w + 2, cam_y + self.view_h + 2
+
+        def vis(e) -> bool:
+            return x0 <= e["x"] <= x1 and y0 <= e["y"] <= y1
+
         for o in self.game.world.objects_in_view(int(cam_x), int(cam_y),
                                                  int(cam_x + self.view_w),
                                                  int(cam_y + self.view_h)):
             items.append((o["y"] + 0.5, lambda o=o: self.draw_object(o, cam_x, cam_y)))
 
         for d in g.drops:
-            items.append((d["y"], lambda d=d: self.draw_drop(d, cam_x, cam_y)))
+            if vis(d):
+                items.append((d["y"], lambda d=d: self.draw_drop(d, cam_x, cam_y)))
         for n in g.npcs:
-            items.append((n["y"], lambda n=n: self.draw_npc(n, cam_x, cam_y)))
+            if vis(n):
+                items.append((n["y"], lambda n=n: self.draw_npc(n, cam_x, cam_y)))
         for m in g.mobs:
-            if m["alive"]:
+            if m["alive"] and vis(m):
                 items.append((m["y"], lambda m=m: self.draw_mob(m, cam_x, cam_y)))
         for a in g.allies:
-            items.append((a["y"], lambda a=a: self.draw_ally(a, cam_x, cam_y)))
+            if vis(a):
+                items.append((a["y"], lambda a=a: self.draw_ally(a, cam_x, cam_y)))
         items.append((g.player["y"], lambda: self.draw_player(cam_x, cam_y)))
         for p in g.particles:
-            items.append((p["y"] - 0.02, lambda p=p: self.draw_particle(p, cam_x, cam_y)))
+            if vis(p):
+                items.append((p["y"] - 0.02, lambda p=p: self.draw_particle(p, cam_x, cam_y)))
         items.sort(key=lambda it: it[0])
         for _y, fn in items:
             fn()
