@@ -128,5 +128,59 @@ def dither_rect(surf: pygame.Surface, rect, color, step: int = 2, alpha_color=No
             surf.set_at((x, y), color)
 
 
+_OVERLAY_CACHE: dict = {}
+
+
+def shade(size, color=(6, 9, 15), alpha: int = 168) -> pygame.Surface:
+    """Ровное затемнение одним спрайтом (кэш): один blit на кадр.
+
+    Шахматный дизер поверх живого мира читался как сетка тайлов, поэтому фон
+    под меню затемняется обычным полупрозрачным слоем — он не «мылит» пиксели,
+    потому что просто притемняет их.
+    """
+    key = ("shade", tuple(size), tuple(color), alpha)
+    surf = _OVERLAY_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface(tuple(size), pygame.SRCALPHA)
+        surf.fill((*tuple(color)[:3], alpha))
+        if len(_OVERLAY_CACHE) > 10:
+            _OVERLAY_CACHE.clear()
+        _OVERLAY_CACHE[key] = surf
+    return surf
+
+
+def dither_overlay(size, color, step: int = 2) -> pygame.Surface:
+    """Полноэкранная шахматка 50%, собранная один раз и закэшированная.
+
+    Поштучный `set_at` на 1080p — это миллион вызовов на кадр; numpy собирает
+    узор за миллисекунды, а дальше это один blit. Шахматка 2×2 даёт ровно
+    половину плотности — так пиксель-арт делает «полупрозрачное затемнение».
+    """
+    key = (tuple(size), tuple(color), step)
+    surf = _OVERLAY_CACHE.get(key)
+    if surf is None:
+        try:
+            import numpy as np
+            w, h = int(size[0]), int(size[1])
+            ys, xs = np.mgrid[0:h, 0:w]
+            mask = ((xs // step + ys // step) % 2 == 0)
+            arr = np.zeros((h, w, 4), dtype=np.uint8)
+            arr[mask] = (color[0], color[1], color[2], 255)
+            surf = pygame.Surface((w, h), pygame.SRCALPHA)
+            pygame.surfarray.blit_array(surf, np.transpose(arr, (1, 0, 2)))
+        except Exception:
+            surf = None
+        if surf is None:
+            surf = pygame.Surface(tuple(size), pygame.SRCALPHA)
+            surf.fill((0, 0, 0, 0))
+            for y in range(0, int(size[1]), step * 2):
+                for x in range(0, int(size[0]), step * 2):
+                    pygame.draw.rect(surf, (*color, 255), (x, y, step, step))
+        if len(_OVERLAY_CACHE) > 8:
+            _OVERLAY_CACHE.clear()
+        _OVERLAY_CACHE[key] = surf
+    return surf
+
+
 def icon_frame(surf: pygame.Surface, rect, color=EDGE) -> None:
     pygame.draw.rect(surf, color, pygame.Rect(rect), 1)

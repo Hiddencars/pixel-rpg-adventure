@@ -236,8 +236,9 @@ class _Field:
 
 
 class World:
-    def __init__(self, seed: int | None = None):
+    def __init__(self, seed: int | None = None, progress=None):
         self.rng = random.Random(seed)
+        self._progress = progress          # callback(доля 0..1, подпись) для экрана загрузки
         # bytearray на строку: 1 байт на тайл вместо 8 байт указателя
         self.tiles: list[bytearray] = [bytearray([T_GRASS]) * MAP_W for _ in range(MAP_H)]
         self.solid: SolidMask = SolidMask(MAP_W, MAP_H)
@@ -474,10 +475,16 @@ class World:
         """
         return _Field(freq, ox, oy, step)
 
+    def _tick(self, frac: float, label: str) -> None:
+        """Сообщить экрану загрузки, сколько сделано (если он есть)."""
+        if self._progress is not None:
+            self._progress(frac, label)
+
     def _generate(self) -> None:
         rng = self.rng
         cx, cy = MAP_W / 2, MAP_H / 2
         # три гладких поля: рельеф, влажность, «лесность». Считаются на редкой сетке.
+        self._tick(0.04, "Рельеф")
         height_f = self._field(0.045)
         moist_f = self._field(0.031, 90.5, 20.25)
         forest_f = self._field(0.09, 5.5, 3.25)
@@ -513,14 +520,21 @@ class World:
 
         self._carve_lake(_sc(58), _sc(38), _sc(11))
         self._carve_lake(_sc(196), _sc(96), _sc(7))
+        self._tick(0.40, "Деревня")
         self._build_village()
+        self._tick(0.50, "Дороги")
         self._roads()
+        self._tick(0.58, "Леса")
         self._forests()
         self._clear_village_trees()
+        self._tick(0.74, "Достопримечательности")
         self._landmarks()
+        self._tick(0.84, "Побережье")
         self._beaches()
+        self._tick(0.90, "Трава и цветы")
         self._scatter_decor()
         self._define_regions()
+        self._tick(0.98, "Области")
 
     def _carve_lake(self, lx: int, ly: int, r: float) -> None:
         for y in range(int(ly - r - 3), int(ly + r + 4)):

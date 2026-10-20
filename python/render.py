@@ -331,6 +331,41 @@ def build_oak(w: int, h: int) -> pygame.Surface:
     return surf
 
 
+def draw_loading(screen: pygame.Surface, width: int, height: int,
+                 frac: float, label: str) -> None:
+    """Экран загрузки: мир 3 096×1 548 строится ~4 секунды.
+
+    Модульная функция, а не метод: рисовать её нужно до того, как появится
+    Renderer — он сам создаётся после мира, потому что печёт миникарту.
+    """
+    scale = width / G.BASE_UI_WIDTH
+    S = lambda v: int(round(v * scale))
+    f_title = _font(max(24, round(32 * scale)), "title")
+    f_small = _font(max(12, round(14 * scale)))
+    f_tiny = _font(max(11, round(12 * scale)))
+
+    screen.fill(ui.BG_DARK)
+    screen.blit(ui.shade((width, height), (18, 23, 34), 130), (0, 0))
+    px, py = width // 2 - S(240), height // 2 - S(40)
+
+    logo = f_title.render("PIXEL PATCH", False, ui.GOLD)
+    screen.blit(logo, (width // 2 - logo.get_width() // 2, py - S(90)))
+    ui.text_center(screen, f_small, "ГЕНЕРАЦИЯ МИРА", width // 2, py - S(40), ui.TEXT_DIM)
+
+    ui.frame(screen, (px, py, S(480), S(26)), fill=ui.BG_DARK)
+    inner = pygame.Rect(px + S(3), py + S(3), S(474), S(20))
+    fill = int(inner.w * max(0.0, min(1.0, frac)))
+    if fill > 0:
+        pygame.draw.rect(screen, ui.GOLD, (inner.x, inner.y, fill, inner.h))
+        pygame.draw.line(screen, (255, 238, 176), (inner.x, inner.y),
+                         (inner.x + fill - 1, inner.y))
+    for x in range(inner.x, inner.right, S(6)):
+        pygame.draw.line(screen, ui.BG_DARK, (x, inner.y), (x, inner.bottom - 1))
+
+    ui.text_center(screen, f_small, label, width // 2, py + S(38), ui.TEXT)
+    ui.text_center(screen, f_tiny, f"{int(frac * 100)}%", width // 2, py + S(62), ui.TEXT_MUTED)
+
+
 # ----------------------------------------------------------------------------
 # Renderer
 # ----------------------------------------------------------------------------
@@ -2087,6 +2122,12 @@ class Renderer:
 
     # ------------------------------------------------------------------ menus
     def draw_title_backdrop(self, screen: pygame.Surface) -> None:
+        """Живой мир за меню, притемнённый пиксельным дизером.
+
+        Раньше здесь был полупрозрачный слой и четырнадцать светлячков; на
+        пиксельном фоне это читалось как мыло. Теперь — шахматная сетка: она и
+        затемняет, и держит стиль.
+        """
         g = self.game
         cam_x = W.VILLAGE_CENTER[0] - self.view_w / 2 + math.sin(self.t * 0.1) * 8
         cam_y = W.VILLAGE_CENTER[1] - self.view_h / 2 + math.cos(self.t * 0.08) * 4
@@ -2107,90 +2148,65 @@ class Renderer:
                                self._scaled)
         screen.fill((8, 12, 20))
         screen.blit(self._scaled, (self.ox, self.oy))
-        dim = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
-        dim.fill((6, 10, 20, 150))
-        screen.blit(dim, (0, 0))
-        for i in range(14):
-            fx = (math.sin(self.t * 0.3 + i * 1.7) * 0.5 + 0.5) * self.width
-            fy = (math.cos(self.t * 0.23 + i * 2.3) * 0.5 + 0.5) * self.height
-            a = int(110 + 100 * math.sin(self.t * 2 + i))
-            glow = pygame.Surface((self.s(9), self.s(9)), pygame.SRCALPHA)
-            pygame.draw.circle(glow, (255, 236, 160, max(0, min(255, a))),
-                               (self.s(4), self.s(4)), self.s(2))
-            screen.blit(glow, (fx, fy))
+        screen.blit(ui.shade((self.width, self.height), (6, 9, 15), 186), (0, 0))
 
     def draw_menu(self, screen, title: str, subtitle: str, entries, selected: int,
                   backdrop: bool = True, note: str = "") -> None:
+        """Пиксельное меню: ровные пункты-слоты, логотип пиксельным шрифтом."""
         S = self.s
         if backdrop:
             self.draw_title_backdrop(screen)
         else:
-            screen.fill((10, 14, 24))
-        row_h = S(52)
-        panel_w = S(700)
-        panel_h = S(150) + len(entries) * row_h + (S(52) if note else S(44))
+            screen.fill(ui.BG_DARK)
+            screen.blit(ui.shade((self.width, self.height), (18, 22, 33), 120), (0, 0))
+
+        row_h = S(44)
+        panel_w = min(self.width - S(60), S(700))
+        panel_h = S(126) + len(entries) * row_h + (S(38) if note else S(18))
         px = (self.width - panel_w) // 2
-        py = (self.height - panel_h) // 2 - S(20)
-        sh = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-        sh.fill((0, 0, 0, 130))
-        screen.blit(sh, (px + S(7), py + S(7)))
-        self.panel(screen, (px, py, panel_w, panel_h), fill=(13, 16, 26, 252),
-                   border=(150, 128, 78), radius=0)
-        pygame.draw.rect(screen, (222, 196, 130), (px, py, panel_w, panel_h), 2)
-        tick = S(14)
-        for (cx, cy, dx, dy) in ((px, py, 1, 1), (px + panel_w, py, -1, 1),
-                                 (px, py + panel_h, 1, -1), (px + panel_w, py + panel_h, -1, -1)):
-            pygame.draw.rect(screen, (246, 224, 156),
-                             (min(cx, cx + dx * tick), min(cy, cy + dy * tick), tick, 3))
-            pygame.draw.rect(screen, (246, 224, 156),
-                             (min(cx, cx + dx * 3), min(cy, cy + dy * tick), 3, tick))
-        title_s = self.text(self.font_title, title, True, (255, 238, 176))
-        title_sh = self.text(self.font_title, title, True, (24, 16, 6))
-        tx = self.width / 2 - title_s.get_width() / 2
-        ty = py + S(26)
-        screen.blit(title_sh, (tx + 3, ty + 3))
-        screen.blit(title_s, (tx, ty))
-        pygame.draw.rect(screen, (150, 128, 78),
-                         (px + S(60), ty + title_s.get_height() + S(10), panel_w - S(120), 1))
+        py = (self.height - panel_h) // 2
+
+        ui.frame(screen, (px, py, panel_w, panel_h), fill=ui.BG,
+                 edge=ui.GOLD_DIM, hi=ui.GOLD)
+
+        logo = self.text(self.font_title, title.upper(), True, ui.GOLD)
+        screen.blit(logo, (self.width // 2 - logo.get_width() // 2, py + S(14)))
+        ly = py + S(14) + logo.get_height() + S(10)
+        pygame.draw.line(screen, ui.GOLD_DIM, (px + S(24), ly), (px + panel_w - S(24), ly))
         if subtitle:
-            sub = self.text(self.font, subtitle, True, (214, 226, 246))
-            screen.blit(sub, (self.width / 2 - sub.get_width() / 2,
-                              ty + title_s.get_height() + S(18)))
-        mouse = pygame.mouse.get_pos()
-        y = ty + title_s.get_height() + (S(66) if subtitle else S(44))
+            sub = self.text(self.font, subtitle, True, ui.TEXT_DIM)
+            screen.blit(sub, (self.width // 2 - sub.get_width() // 2, ly + S(8)))
+
+        y = ly + (S(34) if subtitle else S(18))
         self.menu_rects = []
+        mouse = pygame.mouse.get_pos()
         for i, (label, enabled) in enumerate(entries):
-            rect = pygame.Rect(px + S(56), y, panel_w - S(112), row_h - S(8))
+            rect = pygame.Rect(px + S(26), y, panel_w - S(52), row_h - S(6))
             self.menu_rects.append((rect, i, enabled))
-            cur = (i == selected) or (rect.collidepoint(mouse) and enabled)
-            if cur and enabled:
-                pygame.draw.rect(screen, (34, 28, 16), rect)
-                pygame.draw.rect(screen, (248, 226, 152), rect, 2)
-            col = ((255, 236, 158) if (cur and enabled)
-                   else (204, 214, 232) if enabled else (104, 112, 128))
+            ui.slot(screen, rect, active=(i == selected and enabled), filled=enabled)
+            if i == selected and enabled:
+                pygame.draw.rect(screen, (46, 38, 20), rect.inflate(-4, -4))
+                pygame.draw.rect(screen, ui.GOLD, (rect.x + 2, rect.y + 2, 3, rect.h - 4))
+            elif rect.collidepoint(mouse) and enabled:
+                pygame.draw.rect(screen, (36, 31, 18), rect.inflate(-4, -4))
+            col = (ui.GOLD if (i == selected and enabled)
+                   else ui.TEXT if enabled else ui.TEXT_MUTED)
             txt = self.text(self.font_big, label, True, col)
-            screen.blit(txt, (self.width / 2 - txt.get_width() / 2,
-                              rect[1] + (rect[3] - txt.get_height()) / 2))
-            if cur and enabled and math.sin(self.t * 6) > -0.35:
-                ax0 = rect[0] + S(16)
-                ay0 = rect[1] + rect[3] / 2
-                pygame.draw.polygon(screen, (255, 226, 140),
-                                    [(ax0, ay0 - S(8)), (ax0 + S(10), ay0), (ax0, ay0 + S(8))])
+            screen.blit(txt, (rect.centerx - txt.get_width() // 2,
+                              rect.centery - txt.get_height() // 2))
+            if i == selected and enabled and math.sin(self.t * 6) > -0.35:
+                ax = rect.x + S(10)
+                ay = rect.centery
+                pygame.draw.polygon(screen, ui.GOLD,
+                                    [(ax, ay - S(7)), (ax + S(9), ay), (ax, ay + S(7))])
             y += row_h
-        footer_y = py + panel_h - S(38)
-        pygame.draw.rect(screen, (150, 128, 78),
-                         (px + S(60), footer_y - S(10), panel_w - S(120), 1))
+
         if note:
-            n = self.text(self.font_small, note, True, (186, 204, 228))
-            screen.blit(n, (self.width / 2 - n.get_width() / 2, footer_y))
-        ver = self.text(self.font_small, "Pixel patch — версия 2.6", True,
-                                     (150, 164, 188))
-        screen.blit(ver, (self.width / 2 - ver.get_width() / 2, footer_y + S(16)))
+            ny = py + panel_h - S(26)
+            pygame.draw.line(screen, ui.EDGE, (px + S(24), ny - S(10)),
+                             (px + panel_w - S(24), ny - S(10)))
+            ui.text_center(screen, self.font_small, note, self.width // 2, ny, ui.TEXT_DIM)
 
-
-# ----------------------------------------------------------------------------
-# Input + main loop
-# ----------------------------------------------------------------------------
 def handle_overlay_key(game: G.Game, renderer: Renderer, key: int) -> None:
     """Keys while an overlay (inventory / tree / shop / quests) is open."""
     overlay = game.overlay
@@ -2330,7 +2346,14 @@ def run() -> int:
         res_index = min(res_index, G.best_res_index_for_desktop())
     screen, width, height, zoom = G.apply_display(res_index, fullscreen)
 
-    game = G.Game()
+    def on_progress(frac: float, label: str) -> None:
+        """Экран загрузки: без него первые 4 секунды — чёрный экран."""
+        draw_loading(screen, width, height, frac, label)
+        pygame.display.flip()
+
+    on_progress(0.0, "Рельеф")
+    game = G.Game(progress=on_progress)
+    on_progress(0.99, "Миникарта")
     renderer = Renderer(game, width, height, zoom)
     clock = pygame.time.Clock()
     has_save = G.SAVE_PATH.exists()
@@ -2487,7 +2510,7 @@ def run() -> int:
                             note = ""
                     elif state == "title":
                         if label == "Новая игра":
-                            game = G.Game()
+                            game.reset_progress()   # мир уже сгенерирован: не строим заново
                             renderer.game = game
                             state = "play"
                             note = ""
@@ -2599,10 +2622,9 @@ def run() -> int:
             renderer.draw(screen)
         elif state == "title":
             renderer.draw_menu(screen, "Pixel patch",
-                               "Большой мир • 19 существ • 121 навык • торговля",
+                               f"{W.MAP_W} × {W.MAP_H} тайлов  •  {len(game.world.regions)} областей  •  19 существ  •  121 навык",
                                entries, selected,
-                               note=note or "Стрелки / W S — выбор     Enter — подтвердить     "
-                                            "Esc — выход")
+                               note=note or "W S / стрелки — выбор     Enter — выбрать     Esc — выход")
         elif state == "pause":
             renderer.draw(screen)
             renderer.draw_menu(screen, "Пауза", "", entries, selected, backdrop=False,

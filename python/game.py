@@ -202,53 +202,14 @@ STAT_KEYS = ("atk_flat", "atk_pct", "def_flat", "def_pct", "hp_max", "mp_max",
 
 
 class Game:
-    def __init__(self, seed: int | None = None, sound: bool = True):
+    def __init__(self, seed: int | None = None, sound: bool = True, progress=None):
         self.rng = random.Random(seed)
         self.seed = seed
-        self.world = World(self.rng.randrange(1 << 30) if seed is None else seed)
+        self.world = World(self.rng.randrange(1 << 30) if seed is None else seed,
+                           progress=progress)
         self.frame = 0
         self.time = 0.0
         self.sfx = SFX.build_bank(sound)
-
-        self.player = {
-            "x": float(SPAWN_TILE[0]) + 0.5, "y": float(SPAWN_TILE[1]) + 0.5,
-            "dir": "down", "moving": False, "anim_t": 0.0, "frame": 0,
-            "hp": 60.0, "mp": 30.0, "level": 1, "xp": 0, "xp_next": 40, "gold": 25,
-            "atk_t": 0.0, "atk_anim": 0.0, "hurt_t": 0.0, "invuln": 0.0,
-            "inventory": [], "equip": {"weapon": None, "armor": None, "ring": None,
-                                       "amulet": None},
-            "learned": set(), "hotbar": [], "cooldowns": {}, "buffs": {},
-            "stealth": 0.0, "revived": False,
-        }
-        self.skill_points = 3
-        self.mobs: list[dict] = []
-        self.allies: list[dict] = []
-        self.npcs: list[dict] = []
-        self.drops: list[dict] = []
-        self.particles: list[dict] = []
-        self.floaters: list[dict] = []
-        self.corpses: list[dict] = []
-        self.toasts: list[dict] = []
-        self.dialog: dict | None = None
-        self.overlay: str | None = None        # inventory | skilltree | shop | quests
-        self.inv_cursor = 0
-        self.shop_tab = "sell"                 # sell | buy
-        self.shop_cursor = 0
-        self.tree_cursor = "root"
-        self.tree_zoom = TREE_ZOOM_DEFAULT
-        self.tree_cam = [0.5, 0.5]
-        self.tree_offset = (0.0, 0.0)
-        self.quests: list[dict] = []          # accepted quests, with live progress
-        self.quest_log: list[str] = []        # accepted ids, in order
-        self.quest_done: set[str] = set()
-        self.quest_ready: set[str] = set()
-        self.quest_stats = {"kill": {}, "chop": 0, "mine": 0, "gather": 0, "sold": 0}
-        self.harvest_done: dict[tuple[int, int], float] = {}   # node -> ready time
-        self.nodes: dict[tuple[int, int], dict] | None = None
-        self.merchant_stock: dict[str, int] = dict(IT.SHOP_STOCK)
-        self.reach: set[tuple[int, int]] = set()
-        self.kills: dict[str, int] = {}
-        self.deaths = 0
 
         self.music_on = sound
         self.music = MUS.build_player(sound)
@@ -264,10 +225,64 @@ class Game:
         self.music.set_volume(self.settings["music_volume"])
         self.music.prewarm()          # synthesise every track in the background
         self.music_track: str | None = None
+        self.apply_settings()
+
+        self.reset_progress()
+
+    def reset_progress(self) -> None:
+        """Сбросить прогресс, не трогая сгенерированный мир.
+
+        Мир детерминирован сидом и стоит ~4 секунды генерации, поэтому «Новая
+        игра» из меню должна переиспользовать его, а не строить карту заново.
+        Вызывается и из __init__ — тогда она же и создаёт стартовое состояние.
+        """
+        self.frame = 0
+        self.time = 0.0
+        self.player = {
+            "x": float(SPAWN_TILE[0]) + 0.5, "y": float(SPAWN_TILE[1]) + 0.5,
+            "dir": "down", "moving": False, "anim_t": 0.0, "frame": 0,
+            "hp": 60.0, "mp": 30.0, "level": 1, "xp": 0, "xp_next": 40, "gold": 25,
+            "atk_t": 0.0, "atk_anim": 0.0, "hurt_t": 0.0, "invuln": 0.0,
+            "inventory": [], "equip": {"weapon": None, "armor": None, "ring": None,
+                                       "amulet": None},
+            "learned": set(), "hotbar": [], "cooldowns": {}, "buffs": {},
+            "stealth": 0.0, "revived": False,
+        }
+        self.skill_points = 3
+        self.mobs = []
+        self.allies = []
+        self.npcs = []
+        self.drops = []
+        self.particles = []
+        self.floaters = []
+        self.corpses = []
+        self.toasts = []
+        self.dialog = None
+        self.overlay = None        # inventory | skilltree | shop | quests | map
+        self.inv_cursor = 0
+        self.shop_tab = "sell"                 # sell | buy
+        self.shop_cursor = 0
+        self.tree_cursor = "root"
+        self.tree_zoom = TREE_ZOOM_DEFAULT
+        self.tree_cam = [0.5, 0.5]
+        self.tree_offset = (0.0, 0.0)
+        self.quests = []          # accepted quests, with live progress
+        self.quest_log = []        # accepted ids, in order
+        self.quest_done = set()
+        self.quest_ready = set()
+        self.quest_stats = {"kill": {}, "chop": 0, "mine": 0, "gather": 0, "sold": 0}
+        self.harvest_done = {}   # node -> ready time
+        self.nodes = None
+        self.merchant_stock = dict(IT.SHOP_STOCK)
+        self.reach = set()
+        self.kills = {}
+        self.deaths = 0
+        self.visited = set()
+        self.explored = set()
         self.combat_t = 0.0
         self.battle_track = False
         self.shake = 0.0
-        self.apply_settings()
+        self.music_track = None
 
         self.spawn_npcs()
         self.spawn_mobs()
@@ -275,6 +290,7 @@ class Game:
         self.learn("root")                     # the trunk is always unlocked
         for item_id, count in (("potion", 3), ("herb", 3), ("mana_potion", 1)):
             self.add_item(item_id, count)
+        self.mark_explored()
         cells = f"{W.MAP_W * W.MAP_H:,}".replace(",", " ")
         self.toast(f"Новая игра: мир {W.MAP_W}×{W.MAP_H} — {cells} клеток", "#ffe066")
 

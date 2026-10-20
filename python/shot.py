@@ -150,13 +150,21 @@ def shot_menu():
     entries = [("Новая игра", True), ("Продолжить   — нет сохранения", False),
                ("Настройки", True), ("Выход", True)]
     r.draw_menu(surf, "Pixel patch",
-                "Большой мир • 19 существ • 121 навык • торговля", entries, 0,
-                note="Стрелки / W S — выбор     Enter — подтвердить     Esc — выход")
+                f"{WORLD.MAP_W} × {WORLD.MAP_H} тайлов  •  {len(g.world.regions)} областей  •  19 существ  •  121 навык",
+                entries, 0,
+                note="W S / стрелки — выбор     Enter — выбрать     Esc — выход")
     save(surf, "shot2_menu.png")
+
+
+def shot_loading():
+    surf = pygame.Surface((W, H))
+    R.draw_loading(surf, W, H, 0.58, "Леса")
+    save(surf, "shot2_loading.png")
 
 
 if __name__ == "__main__":
     shot_menu()
+    shot_loading()
     shot_world()
     shot_wilds()
     shot_inventory()
