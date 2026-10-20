@@ -1143,6 +1143,24 @@ class Game:
                     kind = rng.choice([k for k in kinds if MOBS[k]["hp"] > 40] or kinds)
                 self.mobs.append(self.make_mob(spot[0] + 0.5, spot[1] + 0.5, kind, level))
 
+        # 18% суши лежит вне прямоугольников областей — там раньше не было ни
+        # мобов, ни стоянок, и целые страны стояли пустыми. Добиваем россыпью:
+        # бродячий зверь на каждые ~700 клеток такой земли.
+        outside_target = 900
+        placed = tries = 0
+        while placed < outside_target and tries < outside_target * 40:
+            tries += 1
+            x = rng.randrange(4, MAP_W - 4)
+            y = rng.randrange(4, MAP_H - 4)
+            if not self.world.walkable(x, y):
+                continue
+            if self.region_at(x + 0.5, y + 0.5) is not None:
+                continue
+            kind = rng.choice(("wolf", "boar", "goblin", "spider", "slime", "bat"))
+            self.mobs.append(self.make_mob(x + 0.5, y + 0.5, kind,
+                                           1 + rng.randrange(3)))
+            placed += 1
+
     def make_mob(self, x: float, y: float, kind: str, level: int = 1) -> dict:
         base = MOBS[kind]
         scale = 1.0 + (level - 1) * 0.18
