@@ -808,6 +808,67 @@ def _snake(frame=0) -> pygame.Surface:
     return s
 
 
+def _horse(frame=0, view="side", rider=False) -> pygame.Surface:
+    """Лошадь для верховой езды: длинный корпус, шея, грива, уши, копыта."""
+    s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
+    sc = 1.15
+    step = 1 if frame else 0
+    base_y = 61
+    body = (126, 92, 58)
+    dark = shade(body, 0.6)
+    mane = (52, 36, 22)
+    belly = (100, 74, 48)
+    body_cx, body_cy = 32, base_y - 20 * sc
+    _shadow(s, 32, base_y + 3, 30 * sc, 9 * sc)
+
+    # четыре ноги с шагом; задняя пара темнее
+    for i, lx in enumerate((15, 22, 40, 47)):
+        off = (3 if (i + step) % 2 == 0 else -3) * sc
+        x0 = lx * sc
+        col = dark if i in (1, 2) else body
+        _limb(s, col, x0, body_cy + 9 * sc, x0 + off, base_y - 2 * sc, int(5 * sc))
+        _ell(s, (40, 36, 40), x0 + off, base_y - 2 * sc, 3.0 * sc, 2.4 * sc)
+
+    # хвост с кисточкой
+    pygame.draw.line(s, mane, (16 * sc, body_cy - 4 * sc),
+                     (12 * sc, body_cy - 15 * sc), int(3 * sc))
+    _ell(s, mane, 12 * sc, body_cy - 16 * sc, 3 * sc, 3.4 * sc)
+
+    # корпус: длинный, с крупом и шеей
+    _ell(s, body, body_cx, body_cy, 26 * sc, 11 * sc)
+    _ell(s, mix(body, (255, 255, 255), 0.22), body_cx - 3 * sc, body_cy - 4 * sc,
+         18 * sc, 5 * sc)
+    _ell(s, belly, body_cx, body_cy + 5 * sc, 20 * sc, 4 * sc)
+
+    # грива: от ушей вдоль шеи
+    for i in range(7):
+        _ell(s, mane, 30 + i * 2.3, body_cy - 8 * sc - i * 0.8 * sc,
+             2.2 * sc, 2.6 * sc)
+
+    # седло
+    _ell(s, (152, 88, 64), body_cx + 3 * sc, body_cy - 3 * sc, 10 * sc, 3.6 * sc)
+    _ell(s, (108, 60, 42), body_cx + 3 * sc, body_cy - 1 * sc, 9 * sc, 2.4 * sc)
+
+    # шея поднимает голову вверх-вперёд
+    hx, hy = 50 * sc, body_cy - 16 * sc
+    pygame.draw.line(s, body, (body_cx + 10 * sc, body_cy - 4 * sc),
+                     (hx - 2, hy + 3), int(4.4 * sc))
+    # голова: овальная, с мордой
+    _ell(s, body, hx, hy, 9 * sc, 6 * sc)
+    _ell(s, mix(body, (255, 255, 255), 0.18), hx - 1 * sc, hy - 2 * sc, 5 * sc, 2.6 * sc)
+    _ell(s, dark, hx + 4 * sc, hy + 1 * sc, 3.4 * sc, 2.2 * sc)   # ноздря/морда
+    # уши
+    pygame.draw.polygon(s, dark, [(hx - 3 * sc, hy - 4 * sc),
+                                  (hx - 6 * sc, hy - 10 * sc),
+                                  (hx - 1 * sc, hy - 4 * sc)])
+    pygame.draw.polygon(s, dark, [(hx + 3 * sc, hy - 4 * sc),
+                                  (hx + 6 * sc, hy - 10 * sc),
+                                  (hx + 1 * sc, hy - 4 * sc)])
+    # глаз
+    _ell(s, (30, 26, 32), hx + 0.6 * sc, hy - 0.4 * sc, 1.6 * sc, 1.6 * sc)
+    return s
+
+
 def _chicken(frame=0) -> pygame.Surface:
     s = pygame.Surface((SPRITE, SPRITE), pygame.SRCALPHA)
     _shadow(s, 32, 60, 20, 7)
@@ -893,6 +954,7 @@ MONSTER_BUILDERS = {
     "snake": lambda f, v: _snake(f),
     "wolf": lambda f, v: _wolf(f),
     "boar": lambda f, v: _boar(f),
+    "horse": _horse,
     "bear": lambda f, v: _bear(f),
     "cow": lambda f, v: _cow(f),
     "sheep": lambda f, v: _sheep(f),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Pixel patch 2.8 — Python / pygame-ce.
+"""Pixel patch 2.9 — Python / pygame-ce.
 
 Version 2.1 adds the living island: music, fifty quests, harvesting and a
 rebuilt look.  Version 2.0 was the content pass:
@@ -71,6 +71,7 @@ REGION_TRACK = {
     "graveyard": "graveyard", "camp": "forest", "shore": "village",
 }
 EVENT_INTERVAL = (70.0, 150.0)      # секунд между случайными событиями
+MOUNT_SPEED = 2.35                 # множитель скорости верхом (4.6 -> ~10.8 тайл/с)
 COMBAT_RANGE = 7.0                  # hostiles this close start the battle theme
 COMBAT_HOLD = 6.0                   # seconds of calm before the region theme returns
 SITE_NPC_INFO = {
@@ -146,6 +147,7 @@ KEY_ACTIONS = [
     ("music", "Музыка вкл/выкл", "K_F7"),
     ("next_track", "Следующая мелодия", "K_n"),
     ("map", "Карта мира", "K_m"),
+    ("mount", "Сесть / слезть с лошади", "K_r"),
 ]
 DEFAULT_KEYS = {name: getattr(pygame, code) for name, _label, code in KEY_ACTIONS}
 
@@ -280,7 +282,7 @@ class Game:
             "inventory": [], "equip": {"weapon": None, "armor": None, "ring": None,
                                        "amulet": None},
             "learned": set(), "hotbar": [], "cooldowns": {}, "buffs": {},
-            "stealth": 0.0, "revived": False,
+            "stealth": 0.0, "revived": False, "mounted": False,
         }
         self.skill_points = 3
         self.mobs = []
@@ -319,6 +321,8 @@ class Game:
         self.music_track = None
         self.event_timer = 55.0
         self.active_events = []
+        self.horses: list[dict] = []
+        self.spawn_horses()
 
         self.spawn_npcs()
         self.spawn_mobs()
@@ -471,6 +475,8 @@ class Game:
         st["atk"] *= (1.0 + st["atk_pct"] / 100.0)
         st["def"] = max(0.0, (st["def"] + st["def_flat"]) * (1.0 + st["def_pct"] / 100.0))
         st["speed"] = 4.6 * (1.0 + st["speed_pct"] / 100.0)
+        if p.get("mounted"):
+            st["speed"] *= MOUNT_SPEED
         st["crit_chance"] = min(75.0, st["crit_chance"])
         st["crit_mult"] = 1.6 + st["crit_mult"] / 100.0
         st["atk_cd"] = 0.34 / (1.0 + st["atk_speed"] / 100.0)
@@ -1161,6 +1167,85 @@ class Game:
                                            1 + rng.randrange(3)))
             placed += 1
 
+    def spawn_horses(self) -> None:
+        """Лошади на континенте: одна в деревне, по одной в каждом кочевье
+        и пара диких в лугах. Карта 3 096×1 548 пешком — это 11 минут от края
+        до края, верхом — меньше пяти."""
+        rng = self.rng
+        spots: list[tuple[int, int]] = []
+        vx, vy = VILLAGE_CENTER
+        spots.append((vx - 16, vy + 8))                    # деревня, южные ворота
+        for site in getattr(self.world, "sites", ()):
+            if site["kind"] == "nomad_camp":
+                spots.append((site["x"] + 3, site["y"] + 2))
+        for _ in range(4):                                 # дикие в лугах
+            meadow = next((r for r in self.world.regions if r["id"] == "meadow"), None)
+            if meadow:
+                x0, y0, x1, y1 = meadow["rect"]
+                spot = self.world.random_walkable_in((x0 + 8, y0 + 8, x1 - 8, y1 - 8), rng)
+                if spot:
+                    spots.append(spot)
+        for i, (sx, sy) in enumerate(spots):
+            spot = self.world.nearest_walkable(sx, sy) or (sx, sy)
+            self.horses.append({"x": spot[0] + 0.5, "y": spot[1] + 0.5,
+                                "kind": "horse", "name": "Лошадь",
+                                "dir": "down", "moving": False, "anim_t": 0.0,
+                                "frame": 0, "mounted": False,
+                                "wild": i >= 5})
+
+    def nearest_horse(self, max_dist: float = 1.6) -> dict | None:
+        p = self.player
+        best, bd = None, max_dist
+        for h in self.horses:
+            if h.get("mounted"):
+                continue
+            d = math.hypot(h["x"] - p["x"], h["y"] - p["y"])
+            if d < bd:
+                best, bd = h, d
+        return best
+
+    def toggle_mount(self) -> str:
+        """Сесть на ближайшую лошадь или слезть, если уже верхом."""
+        p = self.player
+        if p.get("mounted"):
+            self.dismount()
+            return "Вы слезли с лошади"
+        h = self.nearest_horse()
+        if not h:
+            return "Рядом нет лошади"
+        h["mounted"] = True
+        h["x"], h["y"] = p["x"], p["y"]
+        p["mounted"] = True
+        self.sound("horse")
+        self.toast("Вы сели на лошадь (R — слезть)", "#ffe0b0")
+        return ""
+
+    def dismount(self) -> None:
+        p = self.player
+        for h in self.horses:
+            if h.get("mounted"):
+                h["mounted"] = False
+                spot = self.world.nearest_walkable(int(p["x"]), int(p["y"]) + 1) \
+                    or (int(p["x"]), int(p["y"]) + 1)
+                h["x"], h["y"] = spot[0] + 0.5, spot[1] + 0.5
+        p["mounted"] = False
+
+    def _sync_horse(self) -> None:
+        """Оседланная лошадь едет вместе с игроком; при уроне всадник спешивается."""
+        p = self.player
+        if not p.get("mounted"):
+            return
+        for h in self.horses:
+            if h.get("mounted"):
+                h["x"], h["y"] = p["x"], p["y"]
+                h["dir"] = p["dir"]
+                h["frame"] = p["frame"]
+                h["moving"] = p["moving"]
+                h["anim_t"] = p["anim_t"]
+        if p.get("hurt_t", 0.0) > 0.2:      # всадника сбили с лошади
+            self.dismount()
+            self.toast("Вас сбили с лошади!", "#ff9a9a")
+
     def make_mob(self, x: float, y: float, kind: str, level: int = 1) -> dict:
         base = MOBS[kind]
         scale = 1.0 + (level - 1) * 0.18
@@ -1262,6 +1347,7 @@ class Game:
         self.update_harvest()
         self.mark_explored()
         self.update_events(dt)
+        self._sync_horse()
         self.update_music(dt, self.in_combat())
         if self.shake > 0:
             self.shake = max(0.0, self.shake - dt * 1.6)
@@ -1785,6 +1871,18 @@ class Game:
     def interact(self) -> None:
         if self.dialog:
             self.dialog = None
+            return
+        if self.player.get("mounted"):
+            self.dismount()
+            self.toast("Вы слезли с лошади", "#ffe0b0")
+            return
+        h = self.nearest_horse()
+        if h:
+            h["mounted"] = True
+            h["x"], h["y"] = self.player["x"], self.player["y"]
+            self.player["mounted"] = True
+            self.sound("door")
+            self.toast("Вы сели на лошадь (R — слезть)", "#ffe0b0")
             return
         n = self.nearest_npc()
         if n:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Rendering, UI screens and the main loop for Pixel patch 2.8.
+"""Rendering, UI screens and the main loop for Pixel patch 2.9.
 
 The world layer is drawn on a small logical Surface and scaled by an integer zoom
 (nearest neighbour); all text is drawn 1:1 on the real screen so the font stays
@@ -875,13 +875,18 @@ class Renderer:
         for n in g.npcs:
             if vis(n):
                 items.append((n["y"], lambda n=n: self.draw_npc(n, cam_x, cam_y)))
+        for h in g.horses:
+            if not h.get("mounted") and vis(h):
+                items.append((h["y"], lambda h=h: self.draw_horse(h, cam_x, cam_y)))
         for m in g.mobs:
             if m["alive"] and vis(m):
                 items.append((m["y"], lambda m=m: self.draw_mob(m, cam_x, cam_y)))
         for a in g.allies:
             if vis(a):
                 items.append((a["y"], lambda a=a: self.draw_ally(a, cam_x, cam_y)))
-        items.append((g.player["y"], lambda: self.draw_player(cam_x, cam_y)))
+        items.append((g.player["y"],
+                      lambda: (self.draw_mount(cam_x, cam_y)
+                               if g.player.get("mounted") else self.draw_player(cam_x, cam_y))))
         for p in g.particles:
             if vis(p):
                 items.append((p["y"] - 0.02, lambda p=p: self.draw_particle(p, cam_x, cam_y)))
@@ -1010,6 +1015,42 @@ class Renderer:
             cache[w] = sh
         self.logical.blit(sh, ((x - cam_x + 0.5) * TILE - w / 2,
                                (y - cam_y + 0.94) * TILE - w * 0.30))
+
+    def _horse_sprite(self, h: dict) -> pygame.Surface:
+        key = f"horse_{'down' if h.get('dir') in ('down', 'up') else 'side'}_{h.get('frame', 0)}"
+        surf = self.sprites.get(key) or self.sprites.get("horse_side_0")
+        if h.get("dir") == "left" and key.startswith("horse_side"):
+            surf = self.sprites.get(f"{key}_f") or surf
+        return surf
+
+    def draw_horse(self, h: dict, cam_x: float, cam_y: float) -> None:
+        surf = self._horse_sprite(h)
+        px = int((h["x"] - cam_x) * TILE + TILE / 2 - surf.get_width() / 2)
+        py = int((h["y"] - cam_y) * TILE + TILE - surf.get_height() + 4)
+        if h.get("wild"):
+            # дикая лошадь чуть светлее, чтобы отличать от оседланных
+            t = surf.copy()
+            t.fill((80, 60, 40), special_flags=pygame.BLEND_RGB_ADD)
+            surf = t
+        self.logical.blit(surf, (px, py))
+        self.draw_bar(px + surf.get_width() / 2 - TILE / 2, py + 4, 1.0, cam_x, cam_y,
+                      (255, 200, 120), w=24)
+
+    def draw_mount(self, cam_x: float, cam_y: float) -> None:
+        """Всадник: лошадь и герой поверх неё."""
+        p = self.game.player
+        h = next((h for h in self.game.horses if h.get("mounted")), None)
+        surf = self._horse_sprite(h or {"dir": p["dir"], "frame": p["frame"]})
+        px = int((p["x"] - cam_x) * TILE + TILE / 2 - surf.get_width() / 2)
+        py = int((p["y"] - cam_y) * TILE + TILE - surf.get_height() + 4)
+        self.logical.blit(surf, (px, py))
+        hero = self.sprites.get(f"hero_{p['dir']}_{p['frame']}")
+        if hero is not None:
+            hw = int(hero.get_width() * 0.78)
+            hh = int(hero.get_height() * 0.78)
+            hero = pygame.transform.scale(hero, (hw, hh))
+            self.logical.blit(hero, (px + surf.get_width() / 2 - hw / 2,
+                                     py + 2))
 
     def draw_player(self, cam_x: float, cam_y: float) -> None:
         g, p = self.game, self.game.player
@@ -1371,6 +1412,12 @@ class Renderer:
 
         # ------------------------------------------------------------ подсказка
         hint = ""
+        if p.get("mounted"):                # верхом — одна подсказка, без остальных
+            hint = "R — спешиться   ·   атака работает как обычно"
+        else:
+            horse = g.nearest_horse()
+            if horse:
+                hint = "E — сесть на лошадь" + ("  (дикая)" if horse.get("wild") else "")
         node = g.nearest_node()
         if node:
             verb = {"tree": "E — срубить дерево", "stump": "E — взять пень",
@@ -2444,13 +2491,17 @@ def handle_play_key(game: G.Game, key: int) -> None:
         game.load()
     elif key == k.get("potion", pygame.K_h):
         game.use_potion_hotkey()
+    elif key == k.get("mount", pygame.K_r):
+        msg = game.toggle_mount()
+        if msg:
+            game.toast(msg, "#ffe0b0")
     elif pygame.K_1 <= key <= pygame.K_9:
         game.cast(key - pygame.K_1)
 
 
 def run() -> int:
     pygame.init()
-    pygame.display.set_caption("Pixel patch 2.8")
+    pygame.display.set_caption("Pixel patch 2.9")
     cfg = G.load_config()
     res_index = G.parse_res_arg(sys.argv)
     if res_index is None:

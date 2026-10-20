@@ -956,6 +956,55 @@ def _obj_tower(rng: random.Random) -> pygame.Surface:
     return s
 
 
+def _obj_windmill(rng: random.Random) -> pygame.Surface:
+    """Ветряная мельница: башня с конусом и лопастями."""
+    w, h = 66, 116
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 70), (10, h - 10, 46, 8))
+    _rect(s, WOOD_D, 14, 34, 38, h - 44)          # башня
+    _rect(s, WOOD, 16, 34, 34, h - 44)
+    _rect(s, WOOD_L, 16, 34, 5, h - 44)
+    for y in range(48, h - 12, 10):               # брёвна
+        _rect(s, WOOD_D, 16, y, 34, 2)
+    _rect(s, WOOD_D, 26, 58, 12, 16)              # дверь
+    _rect(s, WOOD, 27, 59, 10, 14)
+    _rect(s, WOOD_D, 34, 88, 10, 8)               # окошко
+    # конус крыши
+    for i, (cy, cw) in enumerate(((26, 38), (18, 28), (12, 18))):
+        _rect(s, STONE if i % 2 else STONE_D, 33 - cw // 2, cy, cw, 3)
+        _rect(s, STONE_L, 33 - cw // 2, cy, cw, 1)
+    # лопасти: крест из четырёх (начинается ниже края канваса)
+    pygame.draw.line(s, WOOD_D, (33, 14), (14, 26), 3)
+    pygame.draw.line(s, WOOD_D, (33, 14), (52, 26), 3)
+    pygame.draw.line(s, WOOD_D, (33, 14), (33, 32), 3)
+    for (x0, y0, x1, y1) in ((14, 26, 12, 36), (52, 26, 54, 36), (33, 32, 33, 42)):
+        pygame.draw.line(s, WOOD_L, (x0, y0), (x1, y1), 2)
+    for i in range(4):                            # малые лопасти-планки
+        pygame.draw.line(s, WOOD, (33, 14), (33 + [10, -10, 2, 2][i],
+                        14 + [2, 2, 12, -8][i]), 2)
+    return s
+
+
+def _obj_beehive(rng: random.Random) -> pygame.Surface:
+    """Улей: стопка рам, стоящая на бревне; сбоку от него — дымок."""
+    w, h = 36, 46
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    pygame.draw.ellipse(s, (0, 0, 0, 60), (6, h - 7, 24, 6))
+    _rect(s, WOOD_D, 4, 18, 28, 6)                # крыша-рамка
+    _rect(s, WOOD_L, 4, 18, 28, 2)
+    for y in range(24, 44, 4):                    # корпус из реек
+        _rect(s, WOOD, 5, y, 26, 4)
+        _rect(s, WOOD_D, 5, y + 2, 26, 1)
+    _rect(s, WOOD_L, 5, 24, 2, 20)                # боковая грань
+    _rect(s, WOOD_L, 29, 24, 2, 20)
+    _rect(s, (222, 190, 96), 11, 34, 4, 4)        # соты-окошко
+    _rect(s, (222, 190, 96), 21, 30, 4, 4)
+    # пчёлы-точки
+    for _ in range(3):
+        _px(s, rng.randrange(6, 30), rng.randrange(22, 40), (214, 168, 60))
+    return s
+
+
 def _obj_cart(rng: random.Random) -> pygame.Surface:
     """Вагонетка с рудой — примета шахт и брошенных лагерей."""
     w, h = 42, 30
@@ -1206,6 +1255,8 @@ _OBJECT_BUILDERS = {
     "shrine": _obj_shrine,
     "tower": _obj_tower,
     "cart": _obj_cart,
+    "windmill": _obj_windmill,
+    "beehive": _obj_beehive,
     "house_a": lambda r: _obj_house(0, r),
     "house_b": lambda r: _obj_house(1, r),
     "house_c": lambda r: _obj_house(2, r),
@@ -1232,6 +1283,7 @@ OBJECT_META = {
     "campfire": (1, 1), "tent": (2, 1), "stall": (2, 1), "pillar": (1, 1),
     "ruin": (2, 1), "cave": (2, 1), "bridge": (1, 1), "flowerbed": (1, 1),
     "shrine": (1, 1), "tower": (2, 1), "cart": (1, 1),
+    "windmill": (2, 1), "beehive": (1, 1),
     "grave": (1, 1),
     "house_a": (3, 2), "house_b": (3, 2), "house_c": (3, 2), "house_wide": (4, 2),
 }

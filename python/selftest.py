@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Headless self-test for Pixel patch 2.8 — run as `python game.py --selftest`.
+"""Headless self-test for Pixel patch 2.9 — run as `python game.py --selftest`.
 
 Exercises real logic (world, spawning, combat, loot, trading, the skill tree,
 saving) and renders frames at every resolution, including each overlay.  Writes
@@ -260,6 +260,22 @@ def _body() -> int:
         got = (game.dialog or {}).get("name")
         check(got == n["name"], f"could not talk to {n['name']}")
     print("talked to all npcs:", not any("could not talk" in x for x in problems))
+
+    # ------------------------------------------------------------ horse
+    if game.horses:
+        h = game.horses[0]
+        p["x"], p["y"] = h["x"], h["y"] + 0.5
+        game.dialog = None
+        game.interact()
+        mounted = bool(p.get("mounted"))
+        speed_h = game.stats()["speed"]
+        game.dialog = None
+        game.interact()                     # спешились
+        speed_w = game.stats()["speed"]
+        check(mounted, "could not mount a horse")
+        check(speed_h > speed_w, f"mount speed {speed_h:.1f} not above foot {speed_w:.1f}")
+        check(not p.get("mounted"), "could not dismount a horse")
+        print(f"horse: mount ok, speed {speed_w:.1f} -> {speed_h:.1f} tiles/s")
 
     # ------------------------------------------------------------- quests
     # every quest kind must be completable, and handing one in must pay out

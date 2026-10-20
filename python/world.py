@@ -237,7 +237,7 @@ class _Field:
 
 class World:
     # сколько стоянок ставить и какие шаблоны существуют (kind, npc_kind)
-    SITE_COUNT = 46
+    SITE_COUNT = 84
     SITE_TEMPLATES = (
         ("ruins", "scout"), ("tower", "scout"),
         ("camp", "hunter"), ("homestead", "hunter"),
@@ -246,6 +246,8 @@ class World:
         ("fishing", "fisher"), ("fishing", "fisher"),
         ("graveyard", "hermit"), ("graveyard", "hermit"),
         ("nomad_camp", "nomad"), ("nomad_camp", "nomad"),
+        ("windmill", ""), ("windmill", "farmer"),
+        ("apiary", ""), ("apiary", "hunter"),
     )
 
     def __init__(self, seed: int | None = None, progress=None):
@@ -1020,6 +1022,23 @@ class World:
         self._place(x, y + 2, "pillar", solid=True)
         self._place(x + 4, y - 3, "dead_tree", solid=True)
         self._place(x - 5, y + 1, "shrine", solid=True)
+
+    def _site_windmill(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x, y, "windmill", solid=True, fw=2)
+        self._place(x - 4, y + 3, "barrel", solid=True)
+        self._place(x + 4, y + 2, "crate", solid=True)
+        self._place(x + 2, y + 4, "haystack", solid=True)
+        for dx in range(-4, 5):
+            if abs(dx) > 1:
+                self._place(x + dx, y + 5, "fence", solid=False)
+
+    def _site_apiary(self, x: int, y: int, rng: random.Random) -> None:
+        self._place(x - 3, y, "beehive", solid=True)
+        self._place(x, y, "beehive", solid=True)
+        self._place(x + 3, y, "beehive", solid=True)
+        self._place(x - 1, y + 3, "campfire", solid=False)
+        self._place(x + 5, y + 2, "log", solid=False)
+        self._place(x - 5, y - 2, "flowerbed", solid=False)
 
     def _site_nomad_camp(self, x: int, y: int, rng: random.Random) -> None:
         self._place(x, y, "tent", solid=True, fw=2)

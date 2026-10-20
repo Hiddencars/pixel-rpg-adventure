@@ -34,7 +34,7 @@ REQUIRED_NAMES: tuple[str, ...] = (
     "swing", "hit", "hit_metal", "hit_magic", "enemy_die", "boss_die",
     "player_hurt", "player_die", "pickup", "coin", "potion", "eat",
     "level_up", "skill_learn", "quest_done", "menu_move", "menu_select",
-    "dialog", "footstep", "sell", "buy", "error", "door", "spell", "arrow",
+    "dialog", "footstep", "sell", "buy", "error", "door", "spell", "arrow", "horse",
     "fire", "howl", "spider", "skeleton", "ghost", "troll", "stun", "dodge",
     "heal", "chest",
 )
@@ -274,6 +274,14 @@ def _menu_select(r):
     return _norm(_cat(_bell(_n(0.06), (880.0, 1760.0), (1.0, 0.30), 0.045),
                       _bell(_n(0.09), (1174.66, 2349.32), (1.0, 0.30), 0.060)), 0.66)
 
+def _horse(r):
+    """Короткий топот копыт: два глухих щелчка подряд."""
+    n1, n2 = _n(0.10), _n(0.10)
+    c1 = _mul(_noise(n1, r, 90), _decay(n1, 0.030))
+    c2 = _mul(_noise(n2, r, 80), _decay(n2, 0.026))
+    return _norm(_gain(_cat(c1, c2), 1.05), 0.6)
+
+
 def _dialog(r):
     return _norm(_bell(_n(0.07), (740.0, 1480.0), (1.0, 0.25), 0.030), 0.58)
 
@@ -404,7 +412,7 @@ EFFECTS: dict[str, Callable[[random.Random], list[float]]] = {
     "player_die": _player_die, "pickup": _pickup, "coin": _coin, "potion": _potion,
     "eat": _eat, "level_up": _level_up, "skill_learn": _skill_learn,
     "quest_done": _quest_done, "menu_move": _menu_move, "menu_select": _menu_select,
-    "dialog": _dialog, "footstep": _footstep, "sell": _sell, "buy": _buy,
+    "dialog": _dialog, "footstep": _footstep, "sell": _sell, "buy": _buy, "horse": _horse,
     "error": _error, "door": _door, "spell": _spell, "arrow": _arrow, "fire": _fire,
     "howl": _howl, "spider": _spider, "skeleton": _skeleton, "ghost": _ghost,
     "troll": _troll, "stun": _stun, "dodge": _dodge, "heal": _heal, "chest": _chest,
