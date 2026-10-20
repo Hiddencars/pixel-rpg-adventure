@@ -429,6 +429,7 @@ class Renderer:
         if getattr(self, "minimap", None) is not None:
             self.minimap_scaled = pygame.transform.scale(
                 self.minimap, (self.s(160), self.s(80)))
+        self._vignette = self._build_vignette(width, height)
 
     def s(self, v: float) -> int:
         return int(round(v * self.ui))
@@ -457,9 +458,11 @@ class Renderer:
         self._glow_cache = {}
         # Concentric circles banded badly (they read as a flat white disc), so the
         # falloff is a real per-pixel gradient, built once per light kind.
-        for kind, (r, col, a) in {"campfire": (44, (255, 168, 84), 92),
-                                  "lamp": (34, (255, 214, 138), 70),
-                                  "house": (38, (255, 208, 146), 50)}.items():
+        # ядро не должно выжигать землю: гасим центр, растягиваем спад,
+        # снижаем альфу — иначе ночью под фонарём не видно ни тайлов, ни лута
+        for kind, (r, col, a) in {"campfire": (42, (255, 170, 96), 62),
+                                  "lamp": (32, (255, 206, 132), 46),
+                                  "house": (36, (255, 200, 140), 32)}.items():
             size = r * 2
             surf = pygame.Surface((size, size), pygame.SRCALPHA)
             for y in range(size):
@@ -469,7 +472,8 @@ class Renderer:
                     d = math.hypot(dx, dy) / r
                     if d >= 1.0:
                         continue
-                    alpha = int(a * (1.0 - d) ** 2.1)
+                    # центр притушен на 25%, спад мягче (степень 2.8)
+                    alpha = int(a * (1.0 - d) ** 2.8 * (0.6 + 0.4 * min(1.0, d * 3)))
                     if alpha > 0:
                         surf.set_at((x, y), (col[0], col[1], col[2], alpha))
             self._glow_cache[kind] = surf
@@ -603,6 +607,8 @@ class Renderer:
                                self._scaled)
         screen.fill(art.VOID)
         screen.blit(self._scaled, (self.ox, self.oy))
+        if g.settings.get("atmosphere", True) and getattr(self, "_vignette", None):
+            screen.blit(self._vignette, (0, 0))
         self.draw_text_layer(screen)
         if g.overlay != "skilltree" and g.overlay != "map":  # oak screen и карта — полные страницы
             self.draw_hud(screen)
@@ -669,25 +675,61 @@ class Renderer:
         art.T_VOID: "void",
     }
 
+    def _build_vignette(self, width: int, height: int) -> pygame.Surface:
+        """Тёмная рамка по краям экрана: 60 px градиента, собранная один раз.
+
+        Даёт глубину кадру и не даёт ярким кострам «выжигать» край экрана.
+        """
+        depth = self.s(80)
+        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        if depth <= 0:
+            return surf
+        for i in range(depth):
+            a = int(190 * (1.0 - i / depth) ** 2.0)
+            if not a:
+                continue
+            pygame.draw.rect(surf, (6, 9, 15, a),
+                             (0, i, width, 1))
+            pygame.draw.rect(surf, (6, 9, 15, a),
+                             (0, height - 1 - i, width, 1))
+        for i in range(depth):
+            a = int(155 * (1.0 - i / depth) ** 2.0)
+            if not a:
+                continue
+            pygame.draw.rect(surf, (6, 9, 15, a), (i, 0, 1, height))
+            pygame.draw.rect(surf, (6, 9, 15, a), (width - 1 - i, 0, 1, height))
+        return surf
+
     def _build_edge_strips(self) -> None:
-        """Мягкая тень вдоль стыка разных земель: убирает «жёсткие прямоугольники»."""
+        """Край земли в пиксельном стиле: жёсткая линия, гаснущая дизером.
+
+        Раньше это был гладкий десятипиксельный градиент — он читался как мыло
+        рядом с чётким пиксель-артом. Теперь 1 px контур и две дизерованные
+        полосы: стык остаётся мягким, но остаётся пиксельным.
+        """
         if getattr(self, "_edge_strips", None) is not None:
             return
-        n = 10
+        n = 4
+        # (альфа, шаг дизера) по глубине полосы: линия -> 50% -> реже -> реже
+        profile = ((170, 1), (110, 2), (70, 2), (40, 3))
         strips = {}
         for side in ("n", "s", "w", "e"):
             if side in ("n", "s"):
                 surf = pygame.Surface((TILE, n), pygame.SRCALPHA)
-                for i in range(n):
-                    a = int(78 * (1.0 - i / n) ** 1.7)
-                    pygame.draw.line(surf, (8, 12, 18, a), (0, i), (TILE, i))
+                for i, (a, step) in enumerate(profile):
+                    for x in range(0, TILE):
+                        if step > 1 and (x // step) % 2:
+                            continue
+                        surf.set_at((x, i), (9, 13, 20, a))
                 if side == "s":
                     surf = pygame.transform.flip(surf, False, True)
             else:
                 surf = pygame.Surface((n, TILE), pygame.SRCALPHA)
-                for i in range(n):
-                    a = int(78 * (1.0 - i / n) ** 1.7)
-                    pygame.draw.line(surf, (8, 12, 18, a), (i, 0), (i, TILE))
+                for i, (a, step) in enumerate(profile):
+                    for y in range(0, TILE):
+                        if step > 1 and (y // step) % 2:
+                            continue
+                        surf.set_at((i, y), (9, 13, 20, a))
                 if side == "e":
                     surf = pygame.transform.flip(surf, True, False)
             strips[side] = surf
@@ -700,7 +742,8 @@ class Renderer:
         if ttype in art.WATER_TILES:
             idx = (wave + tx // 3 + ty // 4) % len(frames)
         else:
-            idx = (tx * 7 + ty * 13 + (tx * ty) % 3) % len(frames)
+            # xor-хэш вместо линейной суммы: линейный давал диагональные полосы
+            idx = ((tx * 73856093) ^ (ty * 19349663)) % len(frames)
         w = self.game.world
         fam = self.TILE_FAMILY.get(ttype, "grass")
         mask = 0
@@ -863,6 +906,9 @@ class Renderer:
 
         Light used to be drawn together with its object, which meant a glow could land
         on top of the player and wash the sprite out; light belongs to the ground."""
+        if self._glow_gain_now() <= 0.02:
+            return
+
         if self._light_objects is None:
             # scan the ~3000 world objects once, not every frame
             self._light_objects = [o for o in self.game.world.objects
@@ -874,8 +920,27 @@ class Renderer:
                 continue
             self.draw_glow(o, cam_x, cam_y)
 
+    def _glow_gain_now(self) -> float:
+        """Яркость световых пятен: 0 днём, 1 глухой ночью.
+
+        Считается раз в кадр: днём аддитивные круги читались как отладочные
+        маркеры, а ночью они и есть освещение.
+        """
+        if getattr(self, "_gain_frame", None) == self.game.frame:
+            return self._glow_gain
+        ph = self.light.forced_phase
+        if ph is None:
+            ph = (lighting.START_PHASE + self.game.time / lighting.DAY_LENGTH) % 1.0
+        dark = lighting.darkness(ph)
+        self._glow_gain = 0.0 if dark < 0.30 else min(1.0, (dark - 0.30) / 0.40)
+        self._gain_frame = self.game.frame
+        return self._glow_gain
+
     def draw_glow(self, o: dict, cam_x: float, cam_y: float) -> None:
         """Warm light around windows, lamps and fires (added, so it lights the ground)."""
+        gain = self._glow_gain_now()
+        if gain <= 0.02:
+            return
         kind = o["kind"]
         if kind == "campfire":
             key, r = "campfire", 44
@@ -887,7 +952,8 @@ class Renderer:
         if surf is None:
             return
         pulse = 0.86 + 0.14 * math.sin(self.game.time * 3 + o["x"])
-        surf.set_alpha(int(255 * min(1.0, pulse)))
+        gain = getattr(self, "_glow_gain", 1.0)
+        surf.set_alpha(int(255 * min(1.0, pulse) * gain))
         self.logical.blit(surf, ((o["x"] - cam_x) * TILE + TILE / 2 - r,
                                  (o["y"] - cam_y) * TILE + TILE / 2 - r),
                           special_flags=pygame.BLEND_RGBA_ADD)
@@ -909,10 +975,28 @@ class Renderer:
 
     def draw_shadow(self, x: float, y: float, cam_x: float, cam_y: float,
                     w: int = 30) -> None:
-        sh = pygame.Surface((w, int(w * 0.34)), pygame.SRCALPHA)
-        pygame.draw.ellipse(sh, (0, 0, 0, 85), (0, 0, w, int(w * 0.34)))
+        """Тень-дизер вместо гладкого эллипса: держит пиксельный стиль.
+
+        Гладкая полупрозрачная клякса рядом с пиксель-артом читалась как декаль.
+        Тень собирается один раз на ширину и кэшируется.
+        """
+        cache = getattr(self, "_shadow_cache", None)
+        if cache is None:
+            cache = self._shadow_cache = {}
+        sh = cache.get(w)
+        if sh is None:
+            hh = max(3, int(w * 0.30))
+            sh = pygame.Surface((w, hh), pygame.SRCALPHA)
+            rx, ry = w / 2.0, hh / 2.0
+            for yy in range(hh):
+                for xx in range(w):
+                    dx = (xx - rx + 0.5) / rx
+                    dy = (yy - ry + 0.5) / ry
+                    if dx * dx + dy * dy <= 1.0 and (xx + yy) % 2 == 0:
+                        sh.set_at((xx, yy), (5, 7, 11, 150))
+            cache[w] = sh
         self.logical.blit(sh, ((x - cam_x + 0.5) * TILE - w / 2,
-                               (y - cam_y + 0.94) * TILE - w * 0.17))
+                               (y - cam_y + 0.94) * TILE - w * 0.30))
 
     def draw_player(self, cam_x: float, cam_y: float) -> None:
         g, p = self.game, self.game.player

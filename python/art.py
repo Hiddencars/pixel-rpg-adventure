@@ -26,7 +26,7 @@ from pathlib import Path
 import pygame
 
 TILE = 32
-VARIANTS = 10
+VARIANTS = 14
 
 # ---------------------------------------------------------------- tile types
 T_VOID, T_DEEP, T_WATER, T_SHALLOW, T_SAND = 0, 1, 2, 3, 4

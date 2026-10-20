@@ -778,39 +778,59 @@ class World:
             self.tiles[y] = bytearray(arr[y].tobytes())
 
     def _scatter_decor(self) -> None:
-        """Плотный, но не забитый: травяные пучки, цветы, камни, ракушки,
-        камыш и грибы по биомам. Новые мелкие декали читаются как «живой пол»."""
-        rng = self.rng
-        for y in range(2, MAP_H - 2):
-            row = self.tiles[y]
-            for x in range(2, MAP_W - 2):
-                t = row[x]
-                r = rng.random()
-                if t in (T_GRASS, T_MEADOW):
-                    if r < 0.30:
-                        self._deco(x, y, "grass_tuft")
-                    elif r < 0.36:
-                        self._deco(x, y, "flower" if rng.random() < 0.6 else "flower2")
-                    elif r < 0.40:
-                        self._deco(x, y, "pebble")
-                    elif r < 0.45:
-                        self._deco(x, y, "bush" if rng.random() < 0.55 else "berry_bush")
-                    elif r < 0.47:
-                        self._deco(x, y, "rock_small")
-                elif t == T_FOREST:
-                    if r < 0.12:
-                        self._deco(x, y, "mushroom" if rng.random() < 0.3 else "grass_tuft")
-                    elif r < 0.16:
-                        self._deco(x, y, "bush" if rng.random() < 0.5 else "rock_small")
-                elif t == T_SAND:
-                    if r < 0.08:
-                        self._deco(x, y, "shell" if rng.random() < 0.5 else "pebble")
-                elif t == T_MUD:
-                    if r < 0.10:
-                        self._deco(x, y, "reed" if rng.random() < 0.5 else "mushroom")
-                elif t == T_ROCK or t == T_STONE:
-                    if r < 0.05:
-                        self._deco(x, y, "pebble")
+        """Плотный «живой пол»: векторные маски вместо 4.8 млн итераций.
+
+        Трава теперь стоит на каждой второй клетке, а не на каждой третьей:
+        плоское поле из одинаковых квадратов читалось как пустое. Решения
+        принимаются массивами, в питон уходят только сами декорации.
+        """
+        arr = self._tile_array()
+        nrng = np.random.default_rng(self.rng.randrange(1 << 31))
+        r = nrng.random((MAP_H, MAP_W), dtype=np.float32)
+        r2 = nrng.random((MAP_H, MAP_W), dtype=np.float32)
+        append = self.decor.append
+
+        def add(mask, kinds):
+            ys, xs = np.nonzero(mask)
+            n = len(xs)
+            if not n:
+                return
+            ks = (nrng.choice(kinds, n) if isinstance(kinds, (list, tuple))
+                  else np.full(n, kinds))
+            for x, y, k in zip(xs.tolist(), ys.tolist(), ks.tolist()):
+                append({"x": x, "y": y, "kind": k})
+
+        border = np.ones((MAP_H, MAP_W), dtype=bool)
+        border[:2, :] = border[-2:, :] = False
+        border[:, :2] = border[:, -2:] = False
+
+        grass = ((arr == T_GRASS) | (arr == T_MEADOW)) & border
+        add(grass & ((r < 0.30) | ((r >= 0.50) & (r < 0.62))), "grass_tuft")
+        fl = grass & (r >= 0.30) & (r < 0.36)
+        add(fl & (r2 < 0.6), "flower")
+        add(fl & (r2 >= 0.6), "flower2")
+        add(grass & (r >= 0.36) & (r < 0.40), "pebble")
+        bush = grass & (r >= 0.40) & (r < 0.46)
+        add(bush & (r2 < 0.55), "bush")
+        add(bush & (r2 >= 0.55), "berry_bush")
+        add(grass & (r >= 0.46) & (r < 0.50), "rock_small")
+
+        forest = (arr == T_FOREST) & border
+        add(forest & (r < 0.036), "mushroom")
+        add(forest & (r < 0.12) & (r >= 0.036), "grass_tuft")
+        add(forest & (r >= 0.12) & (r < 0.16) & (r2 < 0.5), "bush")
+        add(forest & (r >= 0.12) & (r < 0.16) & (r2 >= 0.5), "rock_small")
+
+        sand = (arr == T_SAND) & border
+        add(sand & (r < 0.04), "shell")
+        add(sand & (r >= 0.04) & (r < 0.08), "pebble")
+
+        mud = (arr == T_MUD) & border
+        add(mud & (r < 0.05), "reed")
+        add(mud & (r >= 0.05) & (r < 0.10), "mushroom")
+
+        stone = ((arr == T_ROCK) | (arr == T_STONE)) & border
+        add(stone & (r < 0.05), "pebble")
 
     def _define_regions(self) -> None:
         """Копия модульной REGIONS_DEF — чтобы экземпляр мог менять rect и т.п."""
